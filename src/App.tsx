@@ -13,7 +13,9 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  Zap
+  Zap,
+  Play,
+  Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Goal, Frequency, Unit, UserProfile, AppSettings } from './types';
@@ -26,46 +28,7 @@ const DUMMY_USER: UserProfile = {
   avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuCirzdsBOMLRRmRSlIFZwWfZhREI4tQhpzegW4WoYBXYUJyNfKwjR8RPLRNYM6kfZvS_NFWWaban2gBvUpUL73uMSKJzkknDVcRjxWJ4CSI-YNskNu719nfyxeUHXrAVt-pMWCugH6heYPpbnVrD2NPSsbgLUE6bxqirXzTx0xgnkGlQ2WrYGVpuZIkVaVeQ694J-AS-rXVkNyFytM9XOkXsp0Puc-Td_Z6hmE_6VgyzLsD1-Sa5bHPhYulMc5BlOlgopR7AT4IBdc"
 };
 
-const INITIAL_GOALS: Goal[] = [
-  {
-    id: '1',
-    title: 'Read 30 pages',
-    frequency: 'Daily',
-    targetValue: 30,
-    targetUnit: 'pages',
-    smartReminders: true,
-    createdAt: '2024-01-01',
-    completions: [
-      '2026-03-15', '2026-03-16', '2026-03-17', '2026-03-18', '2026-03-19', '2026-03-20', '2026-03-21'
-    ],
-    isSuspended: false
-  },
-  {
-    id: '2',
-    title: 'Morning workout',
-    frequency: 'Daily',
-    targetValue: 1,
-    targetUnit: 'times',
-    smartReminders: false,
-    createdAt: '2024-01-01',
-    completions: [
-      '2026-03-10', '2026-03-11', '2026-03-12', '2026-03-13', '2026-03-14', '2026-03-15',
-      '2026-03-17', '2026-03-18', '2026-03-19', '2026-03-20', '2026-03-21'
-    ],
-    isSuspended: false
-  },
-  {
-    id: '3',
-    title: 'Drink 2L water',
-    frequency: 'Daily',
-    targetValue: 2,
-    targetUnit: 'liters',
-    smartReminders: true,
-    createdAt: '2024-01-01',
-    completions: ['2026-03-19', '2026-03-20', '2026-03-21'],
-    isSuspended: false
-  }
-];
+const INITIAL_GOALS: Goal[] = [];
 
 // --- Helpers ---
 
@@ -289,8 +252,8 @@ const Consistency = ({ goals }: { goals: Goal[] }) => {
             </div>
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (
-              <div key={d} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
+            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+              <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 justify-items-center">
@@ -423,10 +386,12 @@ const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals }: {
   </div>
 );
 
-const ManageGoalsScreen = ({ goals, onClose, onEditGoal }: { 
+const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDeleteGoal }: { 
   goals: Goal[], 
   onClose: () => void,
-  onEditGoal: (goal: Goal) => void
+  onEditGoal: (goal: Goal) => void,
+  onSuspendGoal: (id: string) => void,
+  onDeleteGoal: (id: string) => void
 }) => (
   <motion.div 
     initial={{ x: '100%' }}
@@ -456,14 +421,23 @@ const ManageGoalsScreen = ({ goals, onClose, onEditGoal }: {
           {goals.map(goal => (
             <div 
               key={goal.id}
-              onClick={() => onEditGoal(goal)}
-              className="flex items-center justify-between p-4 bg-[#1E293B] rounded-lg border border-[#334155] cursor-pointer hover:bg-white/5 transition-colors"
+              className={`flex items-center justify-between p-4 bg-[#1E293B] rounded-lg border border-[#334155] ${goal.isSuspended ? 'opacity-60' : ''}`}
             >
-              <div className="flex flex-col">
-                <span className="text-white font-bold">{goal.title}</span>
+              <div className="flex flex-col flex-1">
+                <span className="text-white font-bold">{goal.title} {goal.isSuspended && <span className="text-xs text-orange-400 ml-2 font-normal">(Suspended)</span>}</span>
                 <span className="text-[12px] text-[#94A3B8]">{goal.frequency} • {goal.targetValue} {goal.targetUnit}</span>
               </div>
-              <ChevronRight size={20} className="text-[#94A3B8]" />
+              <div className="flex items-center gap-1">
+                <button onClick={() => onSuspendGoal(goal.id)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title={goal.isSuspended ? "Resume Goal" : "Suspend Goal"}>
+                  {goal.isSuspended ? <Play size={18} /> : <Pause size={18} />}
+                </button>
+                <button onClick={() => onEditGoal(goal)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Edit Goal">
+                  <Edit2 size={18} />
+                </button>
+                <button onClick={() => onDeleteGoal(goal.id)} className="p-2 text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded-full transition-colors" title="Delete Goal">
+                  <Trash2 size={18} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -529,8 +503,8 @@ const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: {
             </div>
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => (
-              <div key={d} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
+            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+              <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 justify-items-center">
@@ -549,21 +523,22 @@ const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: {
       </main>
 
       <AnimatePresence>
-        {showManage && (
-          <>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowManage(false)}
-              className="fixed inset-0 bg-black/40 z-[70]"
-            />
-            <motion.div 
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
-              className="fixed inset-x-0 bottom-0 bg-[#1E293B] rounded-t-2xl shadow-2xl z-[80] border-t border-[#334155] pb-12"
-            >
+        {showManage && [
+          <motion.div 
+            key="overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowManage(false)}
+            className="fixed inset-0 bg-black/40 z-[70]"
+          />,
+          <motion.div 
+            key="menu"
+            initial={{ y: '100%' }}
+            animate={{ y: 0 }}
+            exit={{ y: '100%' }}
+            className="fixed inset-x-0 bottom-0 bg-[#1E293B] rounded-t-2xl shadow-2xl z-[80] border-t border-[#334155] pb-12"
+          >
               <div className="w-full flex justify-center pt-3 pb-2">
                 <div className="w-10 h-1 bg-[#334155] rounded-full" />
               </div>
@@ -606,8 +581,8 @@ const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: {
                 </button>
               </div>
             </motion.div>
-          </>
-        )}
+          ]
+        }
       </AnimatePresence>
     </motion.div>
   );
@@ -872,27 +847,35 @@ export default function App() {
 
         <AnimatePresence>
           {selectedGoal && (
-            <GoalDetail 
-              goal={selectedGoal} 
-              onClose={() => setSelectedGoal(null)}
-              onSuspend={handleSuspendGoal}
-              onDelete={handleDeleteGoal}
-              onEdit={(g) => { setEditingGoal(g); setSelectedGoal(null); }}
-            />
+            <motion.div key="goal-detail">
+              <GoalDetail 
+                goal={selectedGoal} 
+                onClose={() => setSelectedGoal(null)}
+                onSuspend={handleSuspendGoal}
+                onDelete={handleDeleteGoal}
+                onEdit={(g) => { setEditingGoal(g); setSelectedGoal(null); }}
+              />
+            </motion.div>
           )}
           {isManagingGoals && (
-            <ManageGoalsScreen 
-              goals={goals} 
-              onClose={() => setIsManagingGoals(false)}
-              onEditGoal={(g) => setEditingGoal(g)}
-            />
+            <motion.div key="manage-goals">
+              <ManageGoalsScreen 
+                goals={goals} 
+                onClose={() => setIsManagingGoals(false)}
+                onEditGoal={(g) => setEditingGoal(g)}
+                onSuspendGoal={handleSuspendGoal}
+                onDeleteGoal={handleDeleteGoal}
+              />
+            </motion.div>
           )}
           {(isAddingGoal || editingGoal) && (
-            <NewGoalScreen 
-              initialGoal={editingGoal}
-              onSave={handleSaveGoal}
-              onCancel={() => { setIsAddingGoal(false); setEditingGoal(null); }}
-            />
+            <motion.div key="new-goal">
+              <NewGoalScreen 
+                initialGoal={editingGoal}
+                onSave={handleSaveGoal}
+                onCancel={() => { setIsAddingGoal(false); setEditingGoal(null); }}
+              />
+            </motion.div>
           )}
         </AnimatePresence>
       </div>
