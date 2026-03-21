@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, Component } from 'react';
 import { 
   Plus, 
   Home, 
@@ -15,10 +15,91 @@ import {
   ChevronDown,
   Zap,
   Play,
-  Edit2
+  Edit2,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Goal, Frequency, Unit, UserProfile, AppSettings } from './types';
+import { auth, db } from './firebase';
+import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, User } from 'firebase/auth';
+import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc, getDocFromServer } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: any;
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+  props: ErrorBoundaryProps;
+  
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.props = props;
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#0F172A] text-white flex flex-col items-center justify-center p-6">
+          <h2 className="text-2xl font-bold text-red-500 mb-4">Something went wrong</h2>
+          <pre className="bg-[#1E293B] p-4 rounded-lg text-xs overflow-auto max-w-full text-left whitespace-pre-wrap">
+            {this.state.error?.message}
+          </pre>
+          <button onClick={() => window.location.reload()} className="mt-6 bg-blue-500 px-6 py-2 rounded-full font-bold">
+            Reload App
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // --- Constants & Dummy Data ---
 
@@ -123,7 +204,7 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
   );
 };
 
-const Consistency = ({ goals }: { goals: Goal[] }) => {
+const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings }) => {
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(goals[0]?.id || null);
   
   const selectedGoal = useMemo(() => 
@@ -180,14 +261,19 @@ const Consistency = ({ goals }: { goals: Goal[] }) => {
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();
-    const firstDay = new Date(year, month, 1).getDay();
+    let firstDay = new Date(year, month, 1).getDay();
+    
+    if (settings.startOfWeek === 'Monday') {
+      firstDay = firstDay === 0 ? 6 : firstDay - 1;
+    }
+    
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     
     const days = [];
     for (let i = 0; i < firstDay; i++) days.push(null);
     for (let i = 1; i <= daysInMonth; i++) days.push(i);
     return days;
-  }, []);
+  }, [settings.startOfWeek]);
 
   const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
 
@@ -252,7 +338,10 @@ const Consistency = ({ goals }: { goals: Goal[] }) => {
             </div>
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+            {(settings.startOfWeek === 'Monday' 
+              ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] 
+              : ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+            ).map((d, i) => (
               <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
             ))}
           </div>
@@ -293,11 +382,12 @@ const Consistency = ({ goals }: { goals: Goal[] }) => {
   );
 };
 
-const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals }: { 
+const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals, onLogout }: { 
   user: UserProfile, 
   settings: AppSettings,
   onUpdateSettings: (s: Partial<AppSettings>) => void,
-  onManageGoals: () => void
+  onManageGoals: () => void,
+  onLogout: () => void
 }) => (
   <div className="flex flex-col h-full">
     <header className="p-6 pt-12 pb-6">
@@ -360,7 +450,10 @@ const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals }: {
               />
             </button>
           </div>
-          <button className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors">
+          <button 
+            onClick={() => onUpdateSettings({ startOfWeek: settings.startOfWeek === 'Sunday' ? 'Monday' : 'Sunday' })}
+            className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors"
+          >
             <span className="text-[16px] text-white">Start of Week</span>
             <div className="flex items-center gap-2 text-[#94A3B8]">
               <span className="text-[15px]">{settings.startOfWeek}</span>
@@ -379,6 +472,13 @@ const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals }: {
           </button>
           <button className="w-full flex items-center justify-between h-14 px-4 hover:bg-red-500/5 transition-colors group">
             <span className="text-[16px] text-red-500 group-hover:text-red-400">Delete Account</span>
+          </button>
+          <button 
+            onClick={onLogout}
+            className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors text-red-500"
+          >
+            <span className="text-[16px]">Log Out</span>
+            <LogOut size={20} />
           </button>
         </div>
       </section>
@@ -446,8 +546,9 @@ const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDelete
   </motion.div>
 );
 
-const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: { 
+const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: { 
   goal: Goal, 
+  settings: AppSettings,
   onClose: () => void,
   onSuspend: (id: string) => void,
   onDelete: (id: string) => void,
@@ -459,6 +560,26 @@ const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: {
     // Mocked completion rate for demo
     return 85;
   }, []);
+
+  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
+
+  const calendarDays = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    let firstDay = new Date(year, month, 1).getDay();
+    
+    if (settings.startOfWeek === 'Monday') {
+      firstDay = firstDay === 0 ? 6 : firstDay - 1;
+    }
+    
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    
+    const days = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let i = 1; i <= daysInMonth; i++) days.push(i);
+    return days;
+  }, [settings.startOfWeek]);
 
   return (
     <motion.div 
@@ -496,24 +617,30 @@ const GoalDetail = ({ goal, onClose, onSuspend, onDelete, onEdit }: {
 
         <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155]">
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-lg font-bold text-white font-heading">October</h2>
+            <h2 className="text-lg font-bold text-white font-heading">{monthName}</h2>
             <div className="flex gap-2">
               <button className="p-1 text-[#94A3B8] hover:text-white"><ChevronLeft size={20} /></button>
               <button className="p-1 text-[#94A3B8] hover:text-white"><ChevronRight size={20} /></button>
             </div>
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+            {(settings.startOfWeek === 'Monday' 
+              ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] 
+              : ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+            ).map((d, i) => (
               <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7 gap-y-4 gap-x-2 justify-items-center">
-            {/* Mocked binary calendar grid */}
-            {Array.from({ length: 31 }).map((_, i) => {
-              const completed = Math.random() > 0.3;
+            {calendarDays.map((day, i) => {
+              if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
+              
+              const dateStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const isCompleted = goal.completions.includes(dateStr);
+              
               return (
-                <div key={i} className="w-8 h-8 flex items-center justify-center">
-                  {completed && <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />}
+                <div key={day} className="w-8 h-8 flex items-center justify-center">
+                  {isCompleted && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />}
                 </div>
               );
             })}
@@ -735,9 +862,12 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
 
 // --- Main App ---
 
-export default function App() {
+function AppContent() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  
   const [activeTab, setActiveTab] = useState('home');
-  const [goals, setGoals] = useState<Goal[]>(INITIAL_GOALS);
+  const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
   const [isAddingGoal, setIsAddingGoal] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
@@ -745,53 +875,184 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: true,
     notifications: true,
-    startOfWeek: 'Monday'
+    startOfWeek: 'Sunday'
   });
 
-  const handleToggleGoal = (id: string) => {
-    const today = getTodayISO();
-    setGoals(prev => prev.map(goal => {
-      if (goal.id === id) {
-        const alreadyCompleted = goal.completions.includes(today);
-        return {
-          ...goal,
-          completions: alreadyCompleted 
-            ? goal.completions.filter(c => c !== today)
-            : [...goal.completions, today]
-        };
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady || !user) return;
+
+    // Listen to settings
+    const userRef = doc(db, 'users', user.uid);
+    const unsubSettings = onSnapshot(userRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.settings) {
+          setSettings(data.settings);
+        }
+      } else {
+        // Create default user doc
+        setDoc(userRef, {
+          name: user.displayName || 'User',
+          email: user.email || '',
+          avatarUrl: user.photoURL || '',
+          settings: {
+            darkMode: true,
+            notifications: true,
+            startOfWeek: 'Sunday'
+          }
+        }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));
       }
-      return goal;
-    }));
-  };
+    }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}`));
 
-  const handleSaveGoal = (goalData: Partial<Goal>) => {
-    if (goalData.id) {
-      // Update existing
-      setGoals(prev => prev.map(g => g.id === goalData.id ? { ...g, ...goalData } as Goal : g));
-    } else {
-      // Create new
-      const goal: Goal = {
-        id: Math.random().toString(36).substr(2, 9),
-        title: goalData.title!,
-        frequency: goalData.frequency!,
-        targetValue: goalData.targetValue!,
-        targetUnit: goalData.targetUnit!,
-        smartReminders: goalData.smartReminders!,
-        createdAt: new Date().toISOString().split('T')[0],
-        completions: [],
-        isSuspended: false
-      };
-      setGoals(prev => [...prev, goal]);
+    // Listen to goals
+    const goalsRef = collection(db, 'users', user.uid, 'goals');
+    const unsubGoals = onSnapshot(goalsRef, (snapshot) => {
+      const loadedGoals: Goal[] = [];
+      snapshot.forEach(doc => {
+        loadedGoals.push({ id: doc.id, ...doc.data() } as Goal);
+      });
+      setGoals(loadedGoals);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/goals`));
+
+    return () => {
+      unsubSettings();
+      unsubGoals();
+    };
+  }, [user, isAuthReady]);
+
+  const handleToggleGoal = async (id: string) => {
+    if (!user) return;
+    const goal = goals.find(g => g.id === id);
+    if (!goal) return;
+    
+    const today = getTodayISO();
+    const alreadyCompleted = goal.completions.includes(today);
+    const newCompletions = alreadyCompleted
+      ? goal.completions.filter(c => c !== today)
+      : [...goal.completions, today];
+      
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
+        completions: newCompletions
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
     }
-    setEditingGoal(null);
   };
 
-  const handleSuspendGoal = (id: string) => {
-    setGoals(prev => prev.map(g => g.id === id ? { ...g, isSuspended: !g.isSuspended } : g));
+  const handleSaveGoal = async (goalData: Partial<Goal>) => {
+    if (!user) return;
+    try {
+      if (goalData.id) {
+        // Update existing
+        const { id, ...data } = goalData;
+        await updateDoc(doc(db, 'users', user.uid, 'goals', id), data);
+      } else {
+        // Create new
+        const newGoal = {
+          title: goalData.title!,
+          frequency: goalData.frequency!,
+          targetValue: goalData.targetValue!,
+          targetUnit: goalData.targetUnit!,
+          smartReminders: goalData.smartReminders!,
+          createdAt: new Date().toISOString().split('T')[0],
+          completions: [],
+          isSuspended: false
+        };
+        await addDoc(collection(db, 'users', user.uid, 'goals'), newGoal);
+      }
+      setEditingGoal(null);
+      setIsAddingGoal(false);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}/goals`);
+    }
   };
 
-  const handleDeleteGoal = (id: string) => {
-    setGoals(prev => prev.filter(g => g.id !== id));
+  const handleSuspendGoal = async (id: string) => {
+    if (!user) return;
+    const goal = goals.find(g => g.id === id);
+    if (!goal) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
+        isSuspended: !goal.isSuspended
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
+    }
+  };
+
+  const handleDeleteGoal = async (id: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'goals', id));
+      if (selectedGoal?.id === id) setSelectedGoal(null);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `users/${user.uid}/goals/${id}`);
+    }
+  };
+
+  const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        settings: { ...settings, ...newSettings }
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
+
+  const handleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login failed", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout failed", error);
+    }
+  };
+
+  if (!isAuthReady) {
+    return <div className="min-h-screen bg-[#0F172A] flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>;
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-20 h-20 bg-blue-500 rounded-3xl flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(59,130,246,0.5)]">
+          <CheckCircle2 size={40} className="text-white" />
+        </div>
+        <h1 className="text-3xl font-bold text-white mb-4 font-heading">Habit Tracker</h1>
+        <p className="text-[#94A3B8] mb-12 max-w-xs">Build consistency and track your daily habits seamlessly.</p>
+        <button 
+          onClick={handleLogin}
+          className="w-full max-w-xs bg-white text-[#0F172A] font-bold py-4 rounded-full text-lg hover:bg-gray-100 transition-colors"
+        >
+          Continue with Google
+        </button>
+      </div>
+    );
+  }
+
+  const userProfile: UserProfile = {
+    name: user.displayName || 'User',
+    email: user.email || '',
+    avatarUrl: user.photoURL || ''
   };
 
   return (
@@ -822,7 +1083,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="flex-1 overflow-hidden"
             >
-              <Consistency goals={goals} />
+              <Consistency goals={goals} settings={settings} />
             </motion.div>
           )}
           {activeTab === 'settings' && (
@@ -834,10 +1095,11 @@ export default function App() {
               className="flex-1 overflow-hidden"
             >
               <SettingsScreen 
-                user={DUMMY_USER} 
+                user={userProfile} 
                 settings={settings} 
-                onUpdateSettings={(s) => setSettings(prev => ({ ...prev, ...s }))} 
+                onUpdateSettings={handleUpdateSettings} 
                 onManageGoals={() => setIsManagingGoals(true)}
+                onLogout={handleLogout}
               />
             </motion.div>
           )}
@@ -850,6 +1112,7 @@ export default function App() {
             <motion.div key="goal-detail">
               <GoalDetail 
                 goal={selectedGoal} 
+                settings={settings}
                 onClose={() => setSelectedGoal(null)}
                 onSuspend={handleSuspendGoal}
                 onDelete={handleDeleteGoal}
@@ -880,5 +1143,13 @@ export default function App() {
         </AnimatePresence>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }

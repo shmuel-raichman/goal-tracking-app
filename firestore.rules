@@ -1,0 +1,126 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (matches auth.uid)
+    // Fields:
+    //   - name: string (required, length < 100)
+    //   - email: string (required, valid email)
+    //   - avatarUrl: string (optional, valid URL)
+    //   - settings: map (required, contains darkMode, notifications, startOfWeek)
+    //
+    // Collection: users/{userId}/goals
+    // Document ID: auto-generated
+    // Fields:
+    //   - title: string (required, length < 100)
+    //   - frequency: string (required, in ['Daily', 'Weekdays', 'Weekly'])
+    //   - targetValue: number (required, > 0)
+    //   - targetUnit: string (required, in ['times', 'mins', 'pages', 'liters'])
+    //   - smartReminders: boolean (required)
+    //   - createdAt: string (required, valid ISO date string)
+    //   - completions: list (required, items are strings length < 20)
+    //   - isSuspended: boolean (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidStringLength(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+    
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function hasRequiredFields(requiredFields) {
+      return request.resource.data.keys().hasAll(requiredFields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      let allowedFields = ['name', 'email', 'avatarUrl', 'settings'];
+      let requiredFields = ['name', 'email', 'settings'];
+      
+      let hasValidSettings = data.settings is map &&
+        data.settings.keys().hasAll(['darkMode', 'notifications', 'startOfWeek']) &&
+        data.settings.darkMode is bool &&
+        data.settings.notifications is bool &&
+        data.settings.startOfWeek in ['Monday', 'Sunday'];
+
+      return hasOnlyAllowedFields(allowedFields) &&
+             hasRequiredFields(requiredFields) &&
+             isValidStringLength(data.name, 1, 100) &&
+             isValidEmail(data.email) &&
+             (!('avatarUrl' in data) || isValidUrl(data.avatarUrl)) &&
+             hasValidSettings;
+    }
+
+    function isValidGoal(data) {
+      let allowedFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
+      let requiredFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
+      
+      let hasValidCompletions = data.completions is list && data.completions.size() <= 10000;
+
+      return hasOnlyAllowedFields(allowedFields) &&
+             hasRequiredFields(requiredFields) &&
+             isValidStringLength(data.title, 1, 100) &&
+             data.frequency in ['Daily', 'Weekdays', 'Weekly'] &&
+             data.targetValue is number && data.targetValue > 0 &&
+             data.targetUnit in ['times', 'mins', 'pages', 'liters'] &&
+             data.smartReminders is bool &&
+             isValidDateString(data.createdAt) &&
+             hasValidCompletions &&
+             data.isSuspended is bool;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if false; // Users shouldn't be deleted directly from client
+
+      match /goals/{goalId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidGoal(request.resource.data);
+        allow update: if isOwner(userId) && isValidGoal(request.resource.data) && 
+                      request.resource.data.createdAt == resource.data.createdAt; // createdAt is immutable
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}
