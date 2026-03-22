@@ -185,6 +185,22 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
       </div>
 
       <main className="flex-1 px-4 space-y-2 overflow-y-auto pb-32">
+        {goals.length > 0 && completionRate === 100 && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 bg-gradient-to-r from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 rounded-xl flex items-center gap-4"
+          >
+            <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
+              <CheckCircle2 size={24} className="text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-white font-bold text-sm">Perfect Day! 🌟</p>
+              <p className="text-emerald-200 text-xs mt-0.5">You've completed all your goals for today. Amazing work!</p>
+            </div>
+          </motion.div>
+        )}
+        
         {goals.map(goal => {
           const todayCompletions = goal.completions.filter(c => c === todayISO).length;
           const isCompleted = todayCompletions >= goal.targetValue;
@@ -838,7 +854,7 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
         </div>
         <p className="text-[#94A3B8] text-[13px] font-medium pb-6">Created {parseLocalDate(goal.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
 
-        <div className="flex gap-4 mb-8">
+        <div className="flex gap-4 mb-4">
           <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
             <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">Current Streak</p>
             <p className="text-2xl font-bold text-white">{streak} <span className="text-sm font-medium text-[#94A3B8]">days</span></p>
@@ -848,6 +864,19 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
             <p className="text-2xl font-bold text-white">{completionRate}%</p>
           </div>
         </div>
+        
+        {streak > 0 && (
+          <div className="mb-8 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center gap-3">
+            <Zap size={20} className="text-blue-400 fill-blue-400 shrink-0" />
+            <p className="text-sm text-blue-100 font-medium">
+              {streak >= 30 ? "Incredible! You're unstoppable! 🔥" : 
+               streak >= 14 ? "Two weeks strong! Keep this amazing momentum going! 🚀" :
+               streak >= 7 ? "A whole week! You're building a solid habit! 🌟" :
+               streak >= 3 ? "Great start! Keep the streak alive! 💪" :
+               "You're on the board! Keep it up tomorrow! 👍"}
+            </p>
+          </div>
+        )}
 
         <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155]">
           <div className="flex justify-between items-center mb-6">
@@ -1111,6 +1140,7 @@ function AppContent() {
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
   const [editingHistoryGoal, setEditingHistoryGoal] = useState<Goal | null>(null);
   const [isManagingGoals, setIsManagingGoals] = useState(false);
+  const [encouragementMessage, setEncouragementMessage] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: true,
     notifications: true,
@@ -1176,16 +1206,36 @@ function AppContent() {
     const todayCompletions = goal.completions.filter(c => c === today).length;
     
     let newCompletions;
+    let justCompleted = false;
     if (todayCompletions >= goal.targetValue) {
       newCompletions = goal.completions.filter(c => c !== today);
     } else {
       newCompletions = [...goal.completions, today];
+      if (todayCompletions + 1 === goal.targetValue) {
+        justCompleted = true;
+      }
     }
       
     try {
       await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
         completions: newCompletions
       });
+      
+      if (justCompleted) {
+        const messages = [
+          "Great job! Keep it up! 🚀",
+          "You're on fire! 🔥",
+          "Another step closer to your goals! 🎯",
+          "Consistency is key! 🔑",
+          "Amazing work today! 🌟",
+          "You're doing fantastic! 💪",
+          "Small steps lead to big results! 📈",
+          "Boom! Goal crushed! 💥"
+        ];
+        const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+        setEncouragementMessage(randomMessage);
+        setTimeout(() => setEncouragementMessage(null), 3000);
+      }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
     }
@@ -1393,7 +1443,7 @@ function AppContent() {
                 goal={editingHistoryGoal}
                 settings={settings}
                 onClose={() => setEditingHistoryGoal(null)}
-                onSave={handleSaveHistory}
+                onSave={(completions) => handleSaveHistory(editingHistoryGoal.id, completions)}
               />
             </motion.div>
           )}
@@ -1404,6 +1454,18 @@ function AppContent() {
                 onSave={handleSaveGoal}
                 onCancel={() => { setIsAddingGoal(false); setEditingGoal(null); }}
               />
+            </motion.div>
+          )}
+          {encouragementMessage && (
+            <motion.div 
+              key="encouragement-toast"
+              initial={{ opacity: 0, y: -20, x: '-50%' }}
+              animate={{ opacity: 1, y: 0, x: '-50%' }}
+              exit={{ opacity: 0, y: -20, x: '-50%' }}
+              className="fixed top-6 left-1/2 w-[90%] max-w-sm bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-4 py-3 rounded-lg shadow-2xl flex items-center justify-center gap-2 z-[100]"
+            >
+              <Zap size={20} className="text-yellow-300 fill-yellow-300" />
+              <span className="text-[14px] font-bold">{encouragementMessage}</span>
             </motion.div>
           )}
         </AnimatePresence>
