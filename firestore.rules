@@ -87,22 +87,24 @@ service cloud.firestore {
     }
 
     function isValidGoal(data) {
-      let allowedFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'durationValue', 'durationUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
       let requiredFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
       
       let hasValidCompletions = data.completions is list && data.completions.size() <= 10000;
+      let hasValidFailures = !('failures' in data) || (data.failures is list && data.failures.size() <= 10000);
 
-      return hasOnlyAllowedFields(allowedFields) &&
-             hasRequiredFields(requiredFields) &&
+      return hasRequiredFields(requiredFields) &&
              isValidStringLength(data.title, 1, 100) &&
+             (!('type' in data) || data.type in ['counter', 'binary']) &&
              data.frequency in ['Daily', 'Weekdays', 'Weekly'] &&
              data.targetValue is number && data.targetValue >= 0 &&
              data.targetUnit in ['times', 'mins', 'pages', 'liters'] &&
              (!('durationValue' in data) || (data.durationValue is number && data.durationValue >= 0)) &&
              (!('durationUnit' in data) || data.durationUnit in ['days', 'weeks', 'months', 'indefinite']) &&
              data.smartReminders is bool &&
+             (!('extendDurationIfMissed' in data) || data.extendDurationIfMissed is bool) &&
              isValidDateString(data.createdAt) &&
              hasValidCompletions &&
+             hasValidFailures &&
              data.isSuspended is bool;
     }
 
@@ -120,7 +122,7 @@ service cloud.firestore {
         allow read: if isOwner(userId);
         allow create: if isOwner(userId) && isValidGoal(request.resource.data);
         allow update: if isOwner(userId) && isValidGoal(request.resource.data) && 
-                      request.resource.data.createdAt == resource.data.createdAt; // createdAt is immutable
+                      (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt); // createdAt is immutable
         allow delete: if isOwner(userId);
       }
     }

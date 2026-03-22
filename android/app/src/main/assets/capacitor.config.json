@@ -1,0 +1,5 @@
+{
+	"appId": "com.goaltracker.app",
+	"appName": "Goal Tracker",
+	"webDir": "dist"
+}

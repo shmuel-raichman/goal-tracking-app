@@ -1,1370 +1,31 @@
-import React, { useState, useMemo, useEffect, Component } from 'react';
-import { 
-  Plus, 
-  Home, 
-  Calendar as CalendarIcon, 
-  ShieldCheck, 
-  ChevronLeft, 
-  ChevronRight, 
-  MoreHorizontal, 
-  Pause, 
-  Trash2, 
-  X, 
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  Zap,
-  Play,
-  Edit2,
-  LogOut,
-  History
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Goal, Frequency, Unit, UserProfile, AppSettings, DurationUnit } from './types';
-import { auth, db } from './firebase';
+import React, { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { CheckCircle2 } from 'lucide-react';
 import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, User } from 'firebase/auth';
-import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc, getDocFromServer } from 'firebase/firestore';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: any;
-}
-
-let globalSetError: ((err: Error) => void) | null = null;
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  const err = new Error(JSON.stringify(errInfo));
-  console.error('Firestore Error: ', err.message);
-  if (globalSetError) {
-    globalSetError(err);
-  } else {
-    throw err;
-  }
-}
-
-interface ErrorBoundaryProps {
-  children: React.ReactNode;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
-}
-
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { hasError: false, error: null };
-  props: ErrorBoundaryProps;
-  
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-    this.props = props;
-  }
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen bg-[#0F172A] text-white flex flex-col items-center justify-center p-6">
-          <h2 className="text-2xl font-bold text-red-500 mb-4">Something went wrong</h2>
-          <pre className="bg-[#1E293B] p-4 rounded-lg text-xs overflow-auto max-w-full text-left whitespace-pre-wrap">
-            {this.state.error?.message}
-          </pre>
-          <button onClick={() => window.location.reload()} className="mt-6 bg-blue-500 px-6 py-2 rounded-full font-bold">
-            Reload App
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// --- Constants & Dummy Data ---
-
-const DUMMY_USER: UserProfile = {
-  name: "Alex Mitchell",
-  email: "alex@example.com",
-  avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuCirzdsBOMLRRmRSlIFZwWfZhREI4tQhpzegW4WoYBXYUJyNfKwjR8RPLRNYM6kfZvS_NFWWaban2gBvUpUL73uMSKJzkknDVcRjxWJ4CSI-YNskNu719nfyxeUHXrAVt-pMWCugH6heYPpbnVrD2NPSsbgLUE6bxqirXzTx0xgnkGlQ2WrYGVpuZIkVaVeQ694J-AS-rXVkNyFytM9XOkXsp0Puc-Td_Z6hmE_6VgyzLsD1-Sa5bHPhYulMc5BlOlgopR7AT4IBdc"
-};
-
-const INITIAL_GOALS: Goal[] = [];
-
-// --- Helpers ---
-
-const formatLocalISO = (date: Date) => {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-};
-
-const parseLocalDate = (dateStr: string) => {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(year, month - 1, day);
-};
-
-const getTodayISO = () => formatLocalISO(new Date());
-
-const formatDate = (date: Date) => {
-  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-};
-
-const calculateStreak = (goal: Goal, settings: AppSettings) => {
-  if (!goal || goal.targetValue <= 0 || goal.completions.length === 0) return { current: 0, best: 0, total: 0 };
-
-  const completionsByDate = goal.completions.reduce((acc, date) => {
-    acc[date] = (acc[date] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const shouldCountDate = (date: Date) => {
-    if (goal.frequency === 'Daily') return true;
-    if (goal.frequency === 'Weekdays') {
-      const day = date.getDay();
-      return day !== 0 && day !== 6;
-    }
-    return true;
-  };
-
-  let currentStreak = 0;
-  let bestStreak = 0;
-  let totalCompletions = 0;
-  
-  if (goal.frequency === 'Weekly') {
-    // Weekly streak logic
-    let checkWeekStart = new Date(today);
-    const dayOfWeek = checkWeekStart.getDay();
-    let diff = 0;
-    if (settings.startOfWeek === 'Monday') {
-      diff = checkWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-    } else {
-      diff = checkWeekStart.getDate() - dayOfWeek;
-    }
-    checkWeekStart.setDate(diff);
-    checkWeekStart.setHours(0, 0, 0, 0);
-    
-    // Count total weeks completed
-    // To find best streak, we need to iterate from the earliest completion week to today
-    const sortedCompletions = [...goal.completions].sort();
-    const earliestCompletion = sortedCompletions[0];
-    let iterWeekStart = new Date(parseLocalDate(earliestCompletion));
-    const iterDayOfWeek = iterWeekStart.getDay();
-    let iterDiff = 0;
-    if (settings.startOfWeek === 'Monday') {
-      iterDiff = iterWeekStart.getDate() - iterDayOfWeek + (iterDayOfWeek === 0 ? -6 : 1);
-    } else {
-      iterDiff = iterWeekStart.getDate() - iterDayOfWeek;
-    }
-    iterWeekStart.setDate(iterDiff);
-    iterWeekStart.setHours(0, 0, 0, 0);
-    
-    let tempStreak = 0;
-    
-    while (iterWeekStart <= checkWeekStart) {
-      let weekCompletions = 0;
-      for (let i = 0; i < 7; i++) {
-        let d = new Date(iterWeekStart);
-        d.setDate(d.getDate() + i);
-        const checkISO = formatLocalISO(d);
-        weekCompletions += (completionsByDate[checkISO] || 0);
-      }
-      
-      if (weekCompletions >= goal.targetValue) {
-        tempStreak++;
-        totalCompletions++;
-        bestStreak = Math.max(bestStreak, tempStreak);
-        if (iterWeekStart.getTime() === checkWeekStart.getTime()) {
-          currentStreak = tempStreak;
-        }
-      } else {
-        if (iterWeekStart.getTime() === checkWeekStart.getTime()) {
-          // If current week is not completed, current streak is the previous week's streak
-          currentStreak = tempStreak;
-        }
-        tempStreak = 0;
-      }
-      iterWeekStart.setDate(iterWeekStart.getDate() + 7);
-    }
-  } else {
-    // Daily/Weekdays streak logic
-    const sortedCompletions = [...goal.completions].sort();
-    const earliestCompletion = sortedCompletions[0];
-    let iterDate = new Date(parseLocalDate(earliestCompletion));
-    iterDate.setHours(0, 0, 0, 0);
-    
-    let tempStreak = 0;
-    
-    while (iterDate <= today) {
-      if (!shouldCountDate(iterDate)) {
-        if (iterDate.getTime() === today.getTime()) {
-          currentStreak = tempStreak;
-        }
-        iterDate.setDate(iterDate.getDate() + 1);
-        continue;
-      }
-      
-      const checkISO = formatLocalISO(iterDate);
-      if ((completionsByDate[checkISO] || 0) >= goal.targetValue) {
-        tempStreak++;
-        totalCompletions++;
-        bestStreak = Math.max(bestStreak, tempStreak);
-        if (iterDate.getTime() === today.getTime()) {
-          currentStreak = tempStreak;
-        }
-      } else {
-        if (iterDate.getTime() === today.getTime()) {
-          currentStreak = tempStreak;
-        }
-        tempStreak = 0;
-      }
-      iterDate.setDate(iterDate.getDate() + 1);
-    }
-  }
-
-  return { current: currentStreak, best: bestStreak, total: totalCompletions };
-};
-
-const getGoalDurationProgress = (goal: Goal, successfulDays: number) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const [year, month, day] = goal.createdAt.split('-').map(Number);
-  let createdDate = new Date(year, month - 1, day);
-  createdDate.setHours(0, 0, 0, 0);
-
-  if (goal.completions.length > 0) {
-    const sortedCompletions = [...goal.completions].sort();
-    const earliestCompletion = sortedCompletions[0];
-    const [eYear, eMonth, eDay] = earliestCompletion.split('-').map(Number);
-    const earliestDate = new Date(eYear, eMonth - 1, eDay);
-    earliestDate.setHours(0, 0, 0, 0);
-    if (earliestDate < createdDate) createdDate = earliestDate;
-  }
-  
-  const diffTime = today.getTime() - createdDate.getTime();
-  const daysSinceCreation = Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1;
-  
-  const daysActive = goal.extendDurationIfMissed ? successfulDays : daysSinceCreation;
-
-  let totalDurationDays = 0;
-  if (goal.durationUnit && goal.durationUnit !== 'indefinite' && goal.durationValue) {
-    if (goal.durationUnit === 'days') totalDurationDays = goal.durationValue;
-    else if (goal.durationUnit === 'weeks') totalDurationDays = goal.durationValue * 7;
-    else if (goal.durationUnit === 'months') totalDurationDays = goal.durationValue * 30;
-  }
-  
-  return { daysActive, totalDurationDays };
-};
-
-// --- Components ---
-
-const BottomNav = ({ activeTab, onTabChange }: { activeTab: string, onTabChange: (tab: string) => void }) => (
-  <nav className="fixed bottom-0 left-0 right-0 bg-[#0F172A] border-t border-[#334155] px-6 pb-8 pt-3 flex justify-between items-center z-50">
-    <button onClick={() => onTabChange('home')} className={`flex flex-col items-center gap-1 ${activeTab === 'home' ? 'text-blue-500' : 'text-[#94A3B8]'}`}>
-      <Home size={24} fill={activeTab === 'home' ? 'currentColor' : 'none'} />
-    </button>
-    <button onClick={() => onTabChange('calendar')} className={`flex flex-col items-center gap-1 ${activeTab === 'calendar' ? 'text-blue-500' : 'text-[#94A3B8]'}`}>
-      <CalendarIcon size={24} fill={activeTab === 'calendar' ? 'currentColor' : 'none'} />
-    </button>
-    <button onClick={() => onTabChange('settings')} className={`flex flex-col items-center gap-1 ${activeTab === 'settings' ? 'text-blue-500' : 'text-[#94A3B8]'}`}>
-      <ShieldCheck size={24} fill={activeTab === 'settings' ? 'currentColor' : 'none'} />
-    </button>
-  </nav>
-);
-
-const Dashboard = ({ goals, settings, onToggleGoal, onAddGoal, onSelectGoal }: { 
-  goals: Goal[], 
-  settings: AppSettings,
-  onToggleGoal: (id: string) => void, 
-  onAddGoal: () => void,
-  onSelectGoal: (goal: Goal) => void 
-}) => {
-  const today = useMemo(() => formatDate(new Date()), []);
-  const todayISO = getTodayISO();
-  
-  const completionRate = useMemo(() => {
-    if (goals.length === 0) return 0;
-    
-    let totalTarget = 0;
-    let totalCompleted = 0;
-    
-    goals.forEach(g => {
-      totalTarget += g.targetValue;
-      const todayCompletions = g.completions.filter(c => c === todayISO).length;
-      totalCompleted += Math.min(todayCompletions, g.targetValue);
-    });
-    
-    return (totalCompleted / totalTarget) * 100;
-  }, [goals, todayISO]);
-
-  return (
-    <div className="flex flex-col h-full">
-      <header className="pt-12 px-6 pb-4">
-        <h1 className="text-[32px] font-bold tracking-tight text-white leading-tight font-heading">{today}</h1>
-      </header>
-      
-      <div className="w-full bg-[#334155] h-1 mb-6">
-        <motion.div 
-          className="bg-blue-500 h-full" 
-          initial={{ width: 0 }}
-          animate={{ width: `${completionRate}%` }}
-          transition={{ duration: 0.5, ease: "easeOut" }}
-        />
-      </div>
-
-      <main className="flex-1 px-4 space-y-2 overflow-y-auto pb-32">
-        {goals.length > 0 && completionRate === 100 && (
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-6 p-4 bg-gradient-to-r from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 rounded-xl flex items-center gap-4"
-          >
-            <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-              <CheckCircle2 size={24} className="text-emerald-400" />
-            </div>
-            <div>
-              <p className="text-white font-bold text-sm">Perfect Day! 🌟</p>
-              <p className="text-emerald-200 text-xs mt-0.5">You've completed all your goals for today. Amazing work!</p>
-            </div>
-          </motion.div>
-        )}
-        
-        {goals.map(goal => {
-          const todayCompletions = goal.completions.filter(c => c === todayISO).length;
-          const isCompleted = todayCompletions >= goal.targetValue;
-          const progress = Math.min((todayCompletions / goal.targetValue) * 100, 100);
-          const stats = calculateStreak(goal, settings);
-          const { daysActive, totalDurationDays } = getGoalDurationProgress(goal, stats.total);
-          
-          return (
-          <div 
-            key={goal.id} 
-            className="flex items-center h-[72px] px-4 bg-[#1E293B] rounded-lg border border-[#334155] cursor-pointer transition-colors active:bg-slate-800 relative overflow-hidden"
-            onClick={() => onSelectGoal(goal)}
-          >
-            {goal.targetValue > 1 && !isCompleted && (
-              <div 
-                className="absolute left-0 top-0 bottom-0 bg-blue-500/10 transition-all duration-300" 
-                style={{ width: `${progress}%` }} 
-              />
-            )}
-            <div 
-              className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all relative z-10 ${
-                isCompleted 
-                  ? 'bg-blue-500 border-blue-500' 
-                  : 'border-[#334155]'
-              }`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleGoal(goal.id);
-              }}
-            >
-              {isCompleted && <Check size={14} color="white" strokeWidth={3} />}
-              {!isCompleted && goal.targetValue > 1 && todayCompletions > 0 && (
-                <span className="text-[10px] text-blue-500 font-bold">{todayCompletions}</span>
-              )}
-            </div>
-            <div className="ml-4 flex-1 truncate relative z-10 flex flex-col justify-center">
-              <div className="flex justify-between items-center">
-                <span className={`text-base font-medium truncate transition-all ${
-                  isCompleted ? 'text-[#94A3B8] line-through' : 'text-white'
-                }`}>
-                  {goal.title}
-                </span>
-                {goal.targetValue > 1 && !isCompleted && (
-                  <span className="text-xs text-[#94A3B8] font-medium ml-2">
-                    {todayCompletions} / {goal.targetValue}
-                  </span>
-                )}
-              </div>
-              {totalDurationDays > 0 && (
-                <div className="flex items-center gap-2 mt-0.5">
-                  <div className="flex-1 h-1 bg-[#334155] rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-blue-500/50 rounded-full" 
-                      style={{ width: `${Math.min((daysActive / totalDurationDays) * 100, 100)}%` }}
-                    />
-                  </div>
-                  <span className="text-[10px] text-[#94A3B8] font-medium whitespace-nowrap">
-                    {Math.min(daysActive, totalDurationDays)}/{totalDurationDays}d
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        )})}
-      </main>
-
-      <button 
-        onClick={onAddGoal}
-        className="fixed bottom-[104px] right-6 w-14 h-14 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-blue-600 transition-colors z-20"
-      >
-        <Plus size={28} />
-      </button>
-    </div>
-  );
-};
-
-const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings }) => {
-  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(goals[0]?.id || null);
-  
-  const selectedGoal = useMemo(() => 
-    goals.find(g => g.id === selectedGoalId) || goals[0], 
-  [goals, selectedGoalId]);
-
-  // Streak calculation logic
-  const stats = useMemo(() => {
-    if (!selectedGoal) return { current: 0, best: 0, total: 0 };
-    return calculateStreak(selectedGoal, settings);
-  }, [selectedGoal, settings]);
-
-  // Calendar logic for current month
-  const calendarDays = useMemo(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    let firstDay = new Date(year, month, 1).getDay();
-    
-    if (settings.startOfWeek === 'Monday') {
-      firstDay = firstDay === 0 ? 6 : firstDay - 1;
-    }
-    
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    
-    const days = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
-    for (let i = 1; i <= daysInMonth; i++) days.push(i);
-    return days;
-  }, [settings.startOfWeek]);
-
-  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
-
-  if (goals.length === 0) {
-      return (
-          <div className="flex flex-col items-center justify-center h-full text-center px-8">
-              <div className="w-16 h-16 rounded-full bg-[#1E293B] flex items-center justify-center text-[#94A3B8] mb-4">
-                <CalendarIcon size={32} />
-              </div>
-              <p className="text-white font-bold text-lg mb-2">No goals to track</p>
-              <p className="text-[#94A3B8] text-sm">Add a goal to see your consistency heatmap here.</p>
-          </div>
-      );
-  }
-
-  return (
-    <div className="flex flex-col h-full">
-      <header className="p-6 pt-12 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight text-white font-heading">Consistency</h1>
-      </header>
-
-      <div className="px-6 mb-6">
-        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
-          {goals.map(goal => (
-            <button
-              key={goal.id}
-              onClick={() => setSelectedGoalId(goal.id)}
-              className={`shrink-0 px-4 py-1.5 rounded-full text-[13px] font-bold transition-all ${
-                selectedGoalId === goal.id 
-                  ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' 
-                  : 'bg-[#1E293B] text-[#94A3B8] border border-[#334155]'
-              }`}
-            >
-              {goal.title}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <main className="flex-1 px-6 pb-32 overflow-y-auto">
-        <div className="grid grid-cols-3 gap-4 mb-8">
-          <div className="bg-[#1E293B] p-4 rounded-lg border border-[#334155] flex flex-col items-center text-center shadow-lg">
-            <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider mb-1">Total</p>
-            <p className="text-xl font-bold text-white">{stats.total}</p>
-          </div>
-          <div className="bg-[#1E293B] p-4 rounded-lg border border-[#334155] flex flex-col items-center text-center shadow-lg">
-            <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider mb-1">Current</p>
-            <p className="text-xl font-bold text-white">{stats.current}</p>
-          </div>
-          <div className="bg-[#1E293B] p-4 rounded-lg border border-[#334155] flex flex-col items-center text-center shadow-lg">
-            <p className="text-[10px] font-bold text-[#94A3B8] uppercase tracking-wider mb-1">Best</p>
-            <p className="text-xl font-bold text-white">{stats.best}</p>
-          </div>
-        </div>
-
-        <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155] shadow-xl">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-lg font-bold text-white font-heading">{monthName}</h2>
-            <div className="flex gap-2">
-              <button className="p-1 text-[#94A3B8] hover:text-white transition-colors"><ChevronLeft size={20} /></button>
-              <button className="p-1 text-[#94A3B8] hover:text-white transition-colors"><ChevronRight size={20} /></button>
-            </div>
-          </div>
-          <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {(settings.startOfWeek === 'Monday' 
-              ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] 
-              : ['S', 'M', 'T', 'W', 'T', 'F', 'S']
-            ).map((d, i) => (
-              <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7 gap-y-4 gap-x-2 justify-items-center">
-            {calendarDays.map((day, i) => {
-              if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
-              
-              const dateStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const dayCompletions = selectedGoal?.completions.filter(c => c === dateStr).length || 0;
-              const isCompleted = selectedGoal ? dayCompletions >= selectedGoal.targetValue : false;
-              
-              return (
-                <div 
-                  key={day} 
-                  className={`w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-medium transition-all relative ${
-                    isCompleted 
-                      ? 'bg-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.6)]' 
-                      : 'text-[#94A3B8] hover:bg-white/5'
-                  }`}
-                >
-                  {day}
-                  {!isCompleted && dayCompletions > 0 && (
-                    <div className="absolute inset-0 rounded-full border-2 border-blue-500/50" />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        
-        <div className="mt-8 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-500">
-                <Zap size={20} />
-            </div>
-            <div>
-                <p className="text-white font-bold text-[15px]">Keep it up!</p>
-                <p className="text-[#94A3B8] text-[13px]">You're on a {stats.current} day streak. Don't break the chain.</p>
-            </div>
-        </div>
-      </main>
-    </div>
-  );
-};
-
-const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals, onLogout }: { 
-  user: UserProfile, 
-  settings: AppSettings,
-  onUpdateSettings: (s: Partial<AppSettings>) => void,
-  onManageGoals: () => void,
-  onLogout: () => void
-}) => (
-  <div className="flex flex-col h-full">
-    <header className="p-6 pt-12 pb-6">
-      <h1 className="text-2xl font-bold tracking-tight text-white font-heading">Settings</h1>
-    </header>
-
-    <main className="flex-1 px-6 pb-32 overflow-y-auto">
-      <div className="flex items-center gap-4 mb-10">
-        <div className="w-12 h-12 rounded-lg bg-[#1E293B] border border-[#334155] overflow-hidden flex-shrink-0">
-          <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-        </div>
-        <div className="flex flex-col">
-          <p className="font-bold text-[20px] leading-tight text-white font-heading">{user.name}</p>
-          <p className="text-[13px] font-medium text-[#94A3B8] mt-0.5">{user.email}</p>
-        </div>
-      </div>
-
-      <section className="mb-8">
-        <h2 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider mb-2 px-1">Goals</h2>
-        <div className="bg-[#1E293B] rounded-lg border border-[#334155] overflow-hidden shadow-lg">
-          <button 
-            onClick={onManageGoals}
-            className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500">
-                <Plus size={18} />
-              </div>
-              <span className="text-[16px] text-white">Manage My Goals</span>
-            </div>
-            <ChevronRight size={20} className="text-[#94A3B8]" />
-          </button>
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider mb-2 px-1">Preferences</h2>
-        <div className="bg-[#1E293B] rounded-lg border border-[#334155] overflow-hidden shadow-lg">
-          <div className="flex items-center justify-between h-14 px-4 border-b border-[#334155]">
-            <span className="text-[16px] text-white">Dark Mode</span>
-            <button 
-              onClick={() => onUpdateSettings({ darkMode: !settings.darkMode })}
-              className={`relative w-10 h-6 rounded-full transition-colors ${settings.darkMode ? 'bg-blue-500' : 'bg-[#334155]'}`}
-            >
-              <motion.div 
-                className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
-                animate={{ x: settings.darkMode ? 16 : 0 }}
-              />
-            </button>
-          </div>
-          <div className="flex items-center justify-between h-14 px-4 border-b border-[#334155]">
-            <span className="text-[16px] text-white">Notifications</span>
-            <button 
-              onClick={() => onUpdateSettings({ notifications: !settings.notifications })}
-              className={`relative w-10 h-6 rounded-full transition-colors ${settings.notifications ? 'bg-blue-500' : 'bg-[#334155]'}`}
-            >
-              <motion.div 
-                className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
-                animate={{ x: settings.notifications ? 16 : 0 }}
-              />
-            </button>
-          </div>
-          <button 
-            onClick={() => onUpdateSettings({ startOfWeek: settings.startOfWeek === 'Sunday' ? 'Monday' : 'Sunday' })}
-            className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors"
-          >
-            <span className="text-[16px] text-white">Start of Week</span>
-            <div className="flex items-center gap-2 text-[#94A3B8]">
-              <span className="text-[15px]">{settings.startOfWeek}</span>
-              <ChevronRight size={20} />
-            </div>
-          </button>
-        </div>
-      </section>
-
-      <section>
-        <h2 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider mb-2 px-1">Data</h2>
-        <div className="bg-[#1E293B] rounded-lg border border-[#334155] overflow-hidden shadow-lg">
-          <button className="w-full flex items-center justify-between h-14 px-4 border-b border-[#334155] hover:bg-white/5 transition-colors">
-            <span className="text-[16px] text-white">Export Data</span>
-            <ChevronRight size={20} className="text-[#94A3B8]" />
-          </button>
-          <button className="w-full flex items-center justify-between h-14 px-4 hover:bg-red-500/5 transition-colors group">
-            <span className="text-[16px] text-red-500 group-hover:text-red-400">Delete Account</span>
-          </button>
-          <button 
-            onClick={onLogout}
-            className="w-full flex items-center justify-between h-14 px-4 hover:bg-white/5 transition-colors text-red-500"
-          >
-            <span className="text-[16px]">Log Out</span>
-            <LogOut size={20} />
-          </button>
-        </div>
-      </section>
-    </main>
-  </div>
-);
-
-const EditGoalHistoryScreen = ({ goal, settings, onClose, onSave }: {
-  goal: Goal,
-  settings: AppSettings,
-  onClose: () => void,
-  onSave: (completions: string[]) => void
-}) => {
-  const [completions, setCompletions] = useState<string[]>(goal.completions);
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-
-  const handleToggleDay = (dateStr: string) => {
-    const count = completions.filter(c => c === dateStr).length;
-    if (count >= goal.targetValue) {
-      setCompletions(completions.filter(c => c !== dateStr));
-    } else {
-      const newCompletions = completions.filter(c => c !== dateStr);
-      for (let i = 0; i < goal.targetValue; i++) {
-        newCompletions.push(dateStr);
-      }
-      setCompletions(newCompletions);
-    }
-  };
-
-  const calendarDays = useMemo(() => {
-    const year = currentMonth.getFullYear();
-    const month = currentMonth.getMonth();
-    let firstDay = new Date(year, month, 1).getDay();
-    
-    if (settings.startOfWeek === 'Monday') {
-      firstDay = firstDay === 0 ? 6 : firstDay - 1;
-    }
-    
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    
-    const days = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
-    for (let i = 1; i <= daysInMonth; i++) days.push(i);
-    return days;
-  }, [currentMonth, settings.startOfWeek]);
-
-  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(currentMonth);
-
-  const handlePrevMonth = () => {
-    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
-  };
-
-  const handleNextMonth = () => {
-    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
-  };
-
-  return (
-    <motion.div 
-      initial={{ x: '100%' }}
-      animate={{ x: 0 }}
-      exit={{ x: '100%' }}
-      className="fixed inset-0 bg-[#0F172A] z-[70] flex flex-col"
-    >
-      <header className="flex items-center p-4 justify-between border-b border-[#334155]">
-        <button onClick={onClose} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
-          <ChevronLeft size={24} />
-        </button>
-        <h2 className="text-white text-[18px] font-bold tracking-tight font-heading">Edit History</h2>
-        <button onClick={() => onSave(completions)} className="text-blue-500 font-bold px-4 py-2 hover:bg-blue-500/10 rounded-lg">
-          Save
-        </button>
-      </header>
-
-      <main className="flex-1 px-4 py-6 overflow-y-auto">
-        <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155]">
-          <div className="flex items-center justify-between mb-6">
-            <button onClick={handlePrevMonth} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/5 rounded-full">
-              <ChevronLeft size={20} />
-            </button>
-            <h3 className="text-white font-bold">{monthName}</h3>
-            <button onClick={handleNextMonth} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/5 rounded-full">
-              <ChevronRight size={20} />
-            </button>
-          </div>
-          
-          <div className="grid grid-cols-7 gap-2 mb-2">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => {
-              const adjustedDay = settings.startOfWeek === 'Monday' ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'][i] : day;
-              return (
-                <div key={i} className="text-center text-[11px] font-bold text-[#94A3B8]">{adjustedDay}</div>
-              );
-            })}
-          </div>
-          
-          <div className="grid grid-cols-7 gap-2">
-            {calendarDays.map((day, i) => {
-              if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
-              
-              const dateStr = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const dayCompletions = completions.filter(c => c === dateStr).length;
-              const isCompleted = dayCompletions >= goal.targetValue;
-              
-              return (
-                <button 
-                  key={day} 
-                  onClick={() => handleToggleDay(dateStr)}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-medium transition-all relative ${
-                    isCompleted 
-                      ? 'bg-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.6)]' 
-                      : 'text-[#94A3B8] hover:bg-white/5'
-                  }`}
-                >
-                  {day}
-                  {!isCompleted && dayCompletions > 0 && (
-                    <div className="absolute inset-0 rounded-full border-2 border-blue-500/50" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <p className="text-center text-[11px] text-[#94A3B8] mt-6">Tap a day to toggle completion.</p>
-      </main>
-    </motion.div>
-  );
-};
-
-const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDeleteGoal, onEditHistory }: { 
-  goals: Goal[], 
-  onClose: () => void,
-  onEditGoal: (goal: Goal) => void,
-  onSuspendGoal: (id: string) => void,
-  onDeleteGoal: (id: string) => void,
-  onEditHistory: (goal: Goal) => void
-}) => (
-  <motion.div 
-    initial={{ x: '100%' }}
-    animate={{ x: 0 }}
-    exit={{ x: '100%' }}
-    className="fixed inset-0 bg-[#0F172A] z-[60] flex flex-col"
-  >
-    <header className="flex items-center p-4 justify-between border-b border-[#334155]">
-      <button onClick={onClose} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
-        <ChevronLeft size={24} />
-      </button>
-      <h2 className="text-white text-[18px] font-bold tracking-tight font-heading">Manage Goals</h2>
-      <div className="w-10" />
-    </header>
-
-    <main className="flex-1 px-4 py-6 overflow-y-auto">
-      {goals.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-full text-center px-8">
-          <div className="w-16 h-16 rounded-full bg-[#1E293B] flex items-center justify-center text-[#94A3B8] mb-4">
-            <Plus size={32} />
-          </div>
-          <p className="text-white font-bold text-lg mb-2">No goals yet</p>
-          <p className="text-[#94A3B8] text-sm">Create your first goal to start tracking your progress.</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {goals.map(goal => (
-            <div 
-              key={goal.id}
-              className={`flex items-center justify-between p-4 bg-[#1E293B] rounded-lg border border-[#334155] ${goal.isSuspended ? 'opacity-60' : ''}`}
-            >
-              <div className="flex flex-col flex-1">
-                <span className="text-white font-bold">{goal.title} {goal.isSuspended && <span className="text-xs text-orange-400 ml-2 font-normal">(Suspended)</span>}</span>
-                <span className="text-[12px] text-[#94A3B8]">{goal.frequency} • {goal.targetValue} {goal.targetUnit}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button onClick={() => onSuspendGoal(goal.id)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title={goal.isSuspended ? "Resume Goal" : "Suspend Goal"}>
-                  {goal.isSuspended ? <Play size={18} /> : <Pause size={18} />}
-                </button>
-                <button onClick={() => onEditHistory(goal)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Edit History">
-                  <History size={18} />
-                </button>
-                <button onClick={() => onEditGoal(goal)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Edit Goal">
-                  <Edit2 size={18} />
-                </button>
-                <button onClick={() => onDeleteGoal(goal.id)} className="p-2 text-red-500 hover:text-red-400 hover:bg-red-500/10 rounded-full transition-colors" title="Delete Goal">
-                  <Trash2 size={18} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </main>
-  </motion.div>
-);
-
-const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: { 
-  goal: Goal, 
-  settings: AppSettings,
-  onClose: () => void,
-  onSuspend: (id: string) => void,
-  onDelete: (id: string) => void,
-  onEdit: (goal: Goal) => void
-}) => {
-  const [showManage, setShowManage] = useState(false);
-
-  useModalBackHandler(showManage, () => setShowManage(false), 'manage-goal');
-
-  const { streak, completionRate, daysActive, totalDurationDays } = useMemo(() => {
-    if (!goal || goal.targetValue <= 0) return { streak: 0, completionRate: 0, daysActive: 0, totalDurationDays: 0 };
-
-    const stats = calculateStreak(goal, settings);
-    const { daysActive, totalDurationDays } = getGoalDurationProgress(goal, stats.total);
-    const { daysActive: daysSinceCreation } = getGoalDurationProgress({ ...goal, extendDurationIfMissed: false }, 0);
-    
-    const effectiveDays = totalDurationDays > 0 ? Math.min(daysSinceCreation, totalDurationDays) : daysSinceCreation;
-    
-    let totalPossibleDays = 0;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    if (goal.frequency === 'Daily') {
-      totalPossibleDays = effectiveDays;
-    } else if (goal.frequency === 'Weekdays') {
-      // Calculate actual weekdays in the effective period
-      let count = 0;
-      for (let i = 0; i < effectiveDays; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() - i);
-        const day = d.getDay();
-        if (day !== 0 && day !== 6) count++;
-      }
-      totalPossibleDays = count;
-    } else if (goal.frequency === 'Weekly') {
-      totalPossibleDays = Math.ceil(effectiveDays / 7);
-    }
-    
-    const rate = totalPossibleDays > 0 ? Math.round((stats.total / totalPossibleDays) * 100) : 0;
-    
-    return { streak: stats.current, completionRate: Math.min(rate, 100), daysActive: daysSinceCreation, totalDurationDays };
-  }, [goal.completions, goal.createdAt, goal.targetValue, goal.durationUnit, goal.durationValue, goal.frequency, settings.startOfWeek]);
-
-  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
-
-  const calendarDays = useMemo(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    let firstDay = new Date(year, month, 1).getDay();
-    
-    if (settings.startOfWeek === 'Monday') {
-      firstDay = firstDay === 0 ? 6 : firstDay - 1;
-    }
-    
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    
-    const days = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
-    for (let i = 1; i <= daysInMonth; i++) days.push(i);
-    return days;
-  }, [settings.startOfWeek]);
-
-  return (
-    <motion.div 
-      initial={{ y: '100%' }}
-      animate={{ y: 0 }}
-      exit={{ y: '100%' }}
-      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-      className="fixed inset-0 bg-[#0F172A] z-[60] flex flex-col"
-    >
-      <header className="flex items-center p-4 justify-between">
-        <button onClick={onClose} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
-          <ChevronLeft size={24} />
-        </button>
-        <button onClick={() => setShowManage(true)} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
-          <MoreHorizontal size={24} />
-        </button>
-      </header>
-
-      <main className="flex-1 px-4 overflow-y-auto pb-12">
-        <div className="pt-6 pb-3">
-          <h1 className="text-white text-[32px] font-bold leading-tight font-heading">{goal.title}</h1>
-        </div>
-        <p className="text-[#94A3B8] text-[13px] font-medium pb-6">Created {parseLocalDate(goal.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
-
-        <div className="flex gap-4 mb-4">
-          <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
-            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">Current Streak</p>
-            <p className="text-2xl font-bold text-white">{streak} <span className="text-sm font-medium text-[#94A3B8]">days</span></p>
-          </div>
-          <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
-            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">All-Time Success</p>
-            <p className="text-2xl font-bold text-white">{completionRate}%</p>
-          </div>
-          <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
-            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">
-              {totalDurationDays > 0 ? "Progress" : (goal.extendDurationIfMissed ? "Successful Days" : "Active For")}
-            </p>
-            <div className="text-2xl font-bold text-white flex items-baseline">
-              {totalDurationDays > 0 ? (
-                <>
-                  {Math.min(daysActive, totalDurationDays)}<span className="text-sm font-medium text-[#94A3B8] mx-1">/</span>{totalDurationDays}
-                  <span className="text-sm font-medium text-[#94A3B8] ml-1">days</span>
-                </>
-              ) : (
-                <>
-                  {!goal.extendDurationIfMissed && daysActive >= 7 && daysActive % 7 === 0 ? Math.floor(daysActive / 7) : daysActive}
-                  <span className="text-sm font-medium text-[#94A3B8] ml-1">
-                    {!goal.extendDurationIfMissed && daysActive >= 7 && daysActive % 7 === 0 
-                      ? (Math.floor(daysActive / 7) === 1 ? 'week' : 'weeks') 
-                      : (daysActive === 1 ? 'day' : 'days')}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-        
-        {streak > 0 && (
-          <div className="mb-8 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center gap-3">
-            <Zap size={20} className="text-blue-400 fill-blue-400 shrink-0" />
-            <p className="text-sm text-blue-100 font-medium">
-              {streak >= 30 ? "Incredible! You're unstoppable! 🔥" : 
-               streak >= 14 ? "Two weeks strong! Keep this amazing momentum going! 🚀" :
-               streak >= 7 ? "A whole week! You're building a solid habit! 🌟" :
-               streak >= 3 ? "Great start! Keep the streak alive! 💪" :
-               "You're on the board! Keep it up tomorrow! 👍"}
-            </p>
-          </div>
-        )}
-
-        <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155]">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-lg font-bold text-white font-heading">{monthName}</h2>
-            <div className="flex gap-2">
-              <button className="p-1 text-[#94A3B8] hover:text-white"><ChevronLeft size={20} /></button>
-              <button className="p-1 text-[#94A3B8] hover:text-white"><ChevronRight size={20} /></button>
-            </div>
-          </div>
-          <div className="grid grid-cols-7 gap-y-4 gap-x-2 text-center mb-4">
-            {(settings.startOfWeek === 'Monday' 
-              ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] 
-              : ['S', 'M', 'T', 'W', 'T', 'F', 'S']
-            ).map((d, i) => (
-              <div key={`${d}-${i}`} className="text-[11px] font-bold text-[#94A3B8] uppercase">{d}</div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7 gap-y-4 gap-x-2 justify-items-center">
-            {calendarDays.map((day, i) => {
-              if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
-              
-              const dateStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const dayCompletions = goal.completions.filter(c => c === dateStr).length;
-              const isCompleted = dayCompletions >= goal.targetValue;
-              
-              return (
-                <div key={day} className="w-8 h-8 flex items-center justify-center relative">
-                  {isCompleted && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />}
-                  {!isCompleted && dayCompletions > 0 && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500/50" />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <p className="text-center text-[11px] text-[#94A3B8] mt-6">Completed days are marked with a primary dot.</p>
-      </main>
-
-      <AnimatePresence>
-        {showManage && [
-          <motion.div 
-            key="overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setShowManage(false)}
-            className="fixed inset-0 bg-black/40 z-[70]"
-          />,
-          <motion.div 
-            key="menu"
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            className="fixed inset-x-0 bottom-0 bg-[#1E293B] rounded-t-2xl shadow-2xl z-[80] border-t border-[#334155] pb-12"
-          >
-              <div className="w-full flex justify-center pt-3 pb-2">
-                <div className="w-10 h-1 bg-[#334155] rounded-full" />
-              </div>
-              <div className="px-2 pt-2 flex flex-col">
-                <button 
-                  onClick={() => { onEdit(goal); setShowManage(false); }}
-                  className="flex items-center gap-4 px-4 py-4 w-full text-left active:bg-black/20 rounded-xl transition-colors"
-                >
-                  <div className="w-10 h-10 rounded-full bg-[#0F172A] flex items-center justify-center text-white">
-                    <Plus size={20} />
-                  </div>
-                  <div>
-                    <span className="text-[15px] font-bold text-white block">Edit Goal</span>
-                    <span className="text-[13px] text-[#94A3B8]">Change title, frequency, or target</span>
-                  </div>
-                </button>
-                <button 
-                  onClick={() => { onSuspend(goal.id); setShowManage(false); }}
-                  className="flex items-center gap-4 px-4 py-4 w-full text-left active:bg-black/20 rounded-xl transition-colors mt-1"
-                >
-                  <div className="w-10 h-10 rounded-full bg-[#0F172A] flex items-center justify-center text-white">
-                    <Pause size={20} />
-                  </div>
-                  <div>
-                    <span className="text-[15px] font-bold text-white block">Suspend Goal</span>
-                    <span className="text-[13px] text-[#94A3B8]">Pause tracking without losing history</span>
-                  </div>
-                </button>
-                <button 
-                  onClick={() => { onDelete(goal.id); setShowManage(false); onClose(); }}
-                  className="flex items-center gap-4 px-4 py-4 w-full text-left active:bg-red-500/10 rounded-xl transition-colors mt-1"
-                >
-                  <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
-                    <Trash2 size={20} />
-                  </div>
-                  <div>
-                    <span className="text-[15px] font-bold text-red-500 block">Delete Goal</span>
-                    <span className="text-[13px] text-[#94A3B8]">Permanently remove this goal and data</span>
-                  </div>
-                </button>
-              </div>
-            </motion.div>
-          ]
-        }
-      </AnimatePresence>
-    </motion.div>
-  );
-};
-
-const NewGoalScreen = ({ onSave, onCancel, initialGoal }: { 
-  onSave: (goal: Partial<Goal>) => void, 
-  onCancel: () => void,
-  initialGoal?: Goal | null
-}) => {
-  const [title, setTitle] = useState(initialGoal?.title || '');
-  const [frequency, setFrequency] = useState<Frequency>(initialGoal?.frequency || 'Daily');
-  const [targetValue, setTargetValue] = useState<number>(initialGoal?.targetValue || 0);
-  const [targetUnit, setTargetUnit] = useState<Unit>(initialGoal?.targetUnit || 'times');
-  const [durationValue, setDurationValue] = useState<number>(initialGoal?.durationValue || 0);
-  const [durationUnit, setDurationUnit] = useState<DurationUnit>(initialGoal?.durationUnit || 'indefinite');
-  const [reminders, setReminders] = useState(initialGoal?.smartReminders || false);
-  const [extendDuration, setExtendDuration] = useState(initialGoal?.extendDurationIfMissed || false);
-  const [showToast, setShowToast] = useState(false);
-
-  const handleSave = () => {
-    if (!title) return;
-    onSave({
-      id: initialGoal?.id,
-      title,
-      frequency,
-      targetValue: isNaN(targetValue) ? 0 : targetValue,
-      targetUnit,
-      durationValue: isNaN(durationValue) ? 0 : durationValue,
-      durationUnit,
-      smartReminders: reminders,
-      extendDurationIfMissed: extendDuration,
-      createdAt: initialGoal?.createdAt || formatLocalISO(new Date()),
-      completions: initialGoal?.completions || [],
-      isSuspended: initialGoal?.isSuspended || false
-    });
-    setShowToast(true);
-    setTimeout(() => {
-      setShowToast(false);
-      onCancel();
-    }, 1500);
-  };
-
-  return (
-    <motion.div 
-      initial={{ y: '100%' }}
-      animate={{ y: 0 }}
-      exit={{ y: '100%' }}
-      className="fixed inset-0 bg-[#0F172A] z-[70] flex flex-col"
-    >
-      <header className="flex items-center px-4 py-4 justify-between border-b border-[#334155]">
-        <button onClick={onCancel} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
-          <X size={24} />
-        </button>
-        <h2 className="text-white text-[18px] font-bold tracking-tight font-heading">{initialGoal ? 'Edit Goal' : 'New Goal'}</h2>
-        <button 
-          onClick={handleSave}
-          disabled={!title}
-          className={`px-4 py-1.5 rounded-full font-bold text-[15px] transition-all ${
-            title ? 'bg-blue-500/10 text-blue-500 opacity-100' : 'bg-[#334155] text-[#94A3B8] opacity-50'
-          }`}
-        >
-          Save
-        </button>
-      </header>
-
-      <main className="flex-1 flex flex-col px-6 py-8 gap-10 overflow-y-auto">
-        <div className="flex flex-col">
-          <input 
-            autoFocus
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full bg-transparent border-0 border-b border-[#334155] text-[24px] font-bold text-white placeholder:text-[#94A3B8] focus:ring-0 focus:border-blue-500 transition-colors py-3 px-0 font-heading"
-            placeholder="What do you want to achieve?"
-          />
-        </div>
-
-        <section className="flex flex-col gap-4">
-          <h3 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider">Frequency</h3>
-          <div className="flex gap-3 overflow-x-auto no-scrollbar">
-            {(['Daily', 'Weekdays', 'Weekly'] as Frequency[]).map(f => (
-              <button 
-                key={f}
-                onClick={() => setFrequency(f)}
-                className={`shrink-0 h-8 px-4 rounded-full font-bold text-[15px] transition-all ${
-                  frequency === f ? 'bg-blue-500 text-white' : 'bg-[#1E293B] text-white border border-[#334155]'
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="flex flex-col gap-4">
-          <h3 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider">Target</h3>
-          <div className="flex items-center gap-4 bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
-            <input 
-              type="number"
-              value={targetValue || ''}
-              onChange={(e) => setTargetValue(Number(e.target.value))}
-              className="flex-1 bg-[#0F172A] border-0 rounded-md text-xl font-bold text-white placeholder:text-[#94A3B8] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading"
-              placeholder="0"
-            />
-            <div className="w-[120px] relative">
-              <select 
-                value={targetUnit}
-                onChange={(e) => setTargetUnit(e.target.value as Unit)}
-                className="w-full appearance-none bg-[#0F172A] border-0 rounded-md text-[15px] font-bold text-white focus:ring-1 focus:ring-blue-500 py-3 pl-4 pr-10"
-              >
-                <option value="times">times</option>
-                <option value="mins">mins</option>
-                <option value="pages">pages</option>
-                <option value="liters">liters</option>
-              </select>
-              <ChevronDown size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] pointer-events-none" />
-            </div>
-          </div>
-        </section>
-
-        <section className="flex flex-col gap-4">
-          <h3 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider">Duration</h3>
-          <div className="flex items-center gap-4 bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
-            <input 
-              type="number"
-              value={durationValue || ''}
-              onChange={(e) => setDurationValue(Number(e.target.value))}
-              disabled={durationUnit === 'indefinite'}
-              className="flex-1 bg-[#0F172A] border-0 rounded-md text-xl font-bold text-white placeholder:text-[#94A3B8] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading disabled:opacity-50"
-              placeholder={durationUnit === 'indefinite' ? "∞" : "0"}
-            />
-            <div className="w-[120px] relative">
-              <select 
-                value={durationUnit}
-                onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
-                className="w-full appearance-none bg-[#0F172A] border-0 rounded-md text-[15px] font-bold text-white focus:ring-1 focus:ring-blue-500 py-3 pl-4 pr-10"
-              >
-                <option value="indefinite">forever</option>
-                <option value="days">days</option>
-                <option value="weeks">weeks</option>
-                <option value="months">months</option>
-              </select>
-              <ChevronDown size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] pointer-events-none" />
-            </div>
-          </div>
-        </section>
-
-        <section className="flex flex-col gap-4 mt-2">
-          <div className="flex items-center justify-between bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
-            <div className="flex flex-col">
-              <span className="text-[16px] font-bold text-white">Smart Reminders</span>
-              <span className="text-[13px] text-[#94A3B8]">Notify me if I forget</span>
-            </div>
-            <button 
-              onClick={() => setReminders(!reminders)}
-              className={`relative w-10 h-6 rounded-full transition-colors ${reminders ? 'bg-blue-500' : 'bg-[#334155]'}`}
-            >
-              <motion.div 
-                className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
-                animate={{ x: reminders ? 16 : 0 }}
-              />
-            </button>
-          </div>
-        </section>
-
-        <section className="flex flex-col gap-4 mt-2">
-          <div className="flex items-center justify-between bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
-            <div className="flex flex-col">
-              <span className="text-[16px] font-bold text-white">Extend Duration</span>
-              <span className="text-[13px] text-[#94A3B8]">Count successful days, not calendar days</span>
-            </div>
-            <button 
-              onClick={() => setExtendDuration(!extendDuration)}
-              className={`relative w-10 h-6 rounded-full transition-colors ${extendDuration ? 'bg-blue-500' : 'bg-[#334155]'}`}
-            >
-              <motion.div 
-                className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
-                animate={{ x: extendDuration ? 16 : 0 }}
-              />
-            </button>
-          </div>
-        </section>
-      </main>
-
-      <AnimatePresence>
-        {showToast && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20, x: '-50%' }}
-            animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: 20, x: '-50%' }}
-            className="fixed bottom-6 left-1/2 w-[90%] max-w-sm bg-white text-[#0F172A] px-4 py-3 rounded-lg shadow-2xl flex items-center gap-3 z-[100]"
-          >
-            <CheckCircle2 size={20} className="text-blue-500" />
-            <span className="text-[14px] font-bold">Goal saved successfully</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
-};
-
-// --- Main App ---
-
-let modalCount = 0;
-let backStepsPending = 0;
-let backTimeout: any = null;
-
-// Clear any leftover modal state from page refreshes
-if (typeof window !== 'undefined' && window.history.state?.modalIndex) {
-  window.history.replaceState(null, '');
-}
-
-function requestBack() {
-  backStepsPending++;
-  if (!backTimeout) {
-    backTimeout = setTimeout(() => {
-      window.history.go(-backStepsPending);
-      backStepsPending = 0;
-      backTimeout = null;
-    }, 10);
-  }
-}
-
-function cancelBack() {
-  if (backStepsPending > 0) {
-    backStepsPending--;
-    if (backStepsPending === 0 && backTimeout) {
-      clearTimeout(backTimeout);
-      backTimeout = null;
-    }
-  }
-}
-
-function useModalBackHandler(isOpen: boolean, close: () => void, modalName: string) {
-  useEffect(() => {
-    if (!isOpen) return;
-
-    modalCount++;
-    const currentModalIndex = modalCount;
-    
-    cancelBack();
-    
-    if (window.history.state?.modalName === modalName && window.history.state?.modalIndex === currentModalIndex - 1) {
-      window.history.replaceState({ modalIndex: currentModalIndex, modalName }, '');
-    } else {
-      window.history.pushState({ modalIndex: currentModalIndex, modalName }, '');
-    }
-
-    const handlePopState = (e: PopStateEvent) => {
-      if (!e.state?.modalIndex || e.state.modalIndex < currentModalIndex) {
-        close();
-      }
-    };
-
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-      if (window.history.state?.modalIndex >= currentModalIndex) {
-        requestBack();
-      }
-      modalCount--;
-    };
-  }, [isOpen, close, modalName]);
-}
+import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc } from 'firebase/firestore';
+
+import { auth, db } from './firebase';
+import { Goal, UserProfile, AppSettings, OperationType } from './types';
+import { getTodayISO, formatLocalISO } from './utils/dateHelpers';
+import { getEncouragement } from './utils/encouragement';
+import { handleFirestoreError, setGlobalErrorHandler } from './utils/firestore';
+import { t } from './utils/translations';
+
+// Components
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { BottomNav } from './components/BottomNav';
+
+// Screens
+import { Dashboard } from './screens/Dashboard';
+import { ConsistencyScreen } from './screens/ConsistencyScreen';
+import { SettingsScreen } from './screens/SettingsScreen';
+import { GoalDetail } from './screens/GoalDetail';
+import { NewGoalScreen } from './screens/NewGoalScreen';
+import { EditGoalHistoryScreen } from './screens/EditGoalHistoryScreen';
+import { ManageGoalsScreen } from './screens/ManageGoalsScreen';
+
+// Hooks
+import { useModalBackHandler } from './hooks/useModalBackHandler';
 
 function AppContent() {
   const [error, setError] = useState<Error | null>(null);
@@ -1372,6 +33,7 @@ function AppContent() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   
   const [activeTab, setActiveTab] = useState('home');
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
   const [isAddingGoal, setIsAddingGoal] = useState(false);
@@ -1382,18 +44,53 @@ function AppContent() {
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: true,
     notifications: true,
+    encouragement: true,
     startOfWeek: 'Sunday'
   });
 
+  // Modal Back Handlers
   useModalBackHandler(!!selectedGoal, () => setSelectedGoal(null), 'detail');
   useModalBackHandler(isAddingGoal, () => setIsAddingGoal(false), 'add');
   useModalBackHandler(!!editingGoal, () => setEditingGoal(null), 'edit');
   useModalBackHandler(!!editingHistoryGoal, () => setEditingHistoryGoal(null), 'history');
   useModalBackHandler(isManagingGoals, () => setIsManagingGoals(false), 'manage');
 
+  // Handle main navigation back button
   useEffect(() => {
-    globalSetError = setError;
-    return () => { globalSetError = null; };
+    if (isAddingGoal || !!selectedGoal || !!editingGoal || !!editingHistoryGoal || isManagingGoals) return;
+
+    const handlePopState = (e: PopStateEvent) => {
+      if ((window as any).__ignoreNextPopState) {
+        (window as any).__ignoreNextPopState = false;
+        return;
+      }
+      
+      if (activeTab !== 'home') {
+        if (!e.state?.tab || e.state.tab === 'home') {
+          setActiveTab('home');
+        }
+      } else {
+        setShowExitConfirm(true);
+        window.history.pushState({ tab: 'home' }, '');
+      }
+    };
+
+    if (activeTab !== 'home') {
+      if (window.history.state?.tab !== activeTab && !(window as any).__ignoreNextPopState) {
+        window.history.pushState({ tab: activeTab }, '');
+      }
+    } else {
+      if (window.history.state?.tab !== 'home' && !(window as any).__ignoreNextPopState) {
+        window.history.replaceState({ tab: 'home' }, '');
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTab, isAddingGoal, selectedGoal, editingGoal, editingHistoryGoal, isManagingGoals]);
+
+  useEffect(() => {
+    setGlobalErrorHandler(setError);
   }, []);
 
   if (error) throw error;
@@ -1409,7 +106,6 @@ function AppContent() {
   useEffect(() => {
     if (!isAuthReady || !user) return;
 
-    // Listen to settings
     const userRef = doc(db, 'users', user.uid);
     const unsubSettings = onSnapshot(userRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -1418,7 +114,6 @@ function AppContent() {
           setSettings(data.settings);
         }
       } else {
-        // Create default user doc
         setDoc(userRef, {
           name: user.displayName || 'User',
           email: user.email || '',
@@ -1426,13 +121,13 @@ function AppContent() {
           settings: {
             darkMode: true,
             notifications: true,
+            encouragement: true,
             startOfWeek: 'Sunday'
           }
         }).catch(e => handleFirestoreError(e, OperationType.WRITE, `users/${user.uid}`));
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `users/${user.uid}`));
 
-    // Listen to goals
     const goalsRef = collection(db, 'users', user.uid, 'goals');
     const unsubGoals = onSnapshot(goalsRef, (snapshot) => {
       const loadedGoals: Goal[] = [];
@@ -1457,48 +152,107 @@ function AppContent() {
     const todayCompletions = goal.completions.filter(c => c === today).length;
     
     let newCompletions;
+    let newFailures = goal.failures || [];
     let justCompleted = false;
-    if (todayCompletions >= goal.targetValue) {
-      newCompletions = goal.completions.filter(c => c !== today);
-    } else {
-      newCompletions = [...goal.completions, today];
-      if (todayCompletions + 1 === goal.targetValue) {
+    
+    if (goal.type === 'binary') {
+      if (todayCompletions > 0) {
+        newCompletions = goal.completions.filter(c => c !== today);
+      } else {
+        newCompletions = [...goal.completions, today];
+        newFailures = newFailures.filter(c => c !== today);
         justCompleted = true;
+      }
+    } else {
+      if (todayCompletions >= goal.targetValue) {
+        newCompletions = goal.completions.filter(c => c !== today);
+      } else {
+        newCompletions = [...goal.completions, today];
+        if (todayCompletions + 1 === goal.targetValue) {
+          justCompleted = true;
+        }
       }
     }
       
     try {
       await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
-        completions: newCompletions
+        completions: newCompletions,
+        failures: newFailures
       });
       
-      if (justCompleted) {
-        const messages = [
-          "Great job! Keep it up! 🚀",
-          "You're on fire! 🔥",
-          "Another step closer to your goals! 🎯",
-          "Consistency is key! 🔑",
-          "Amazing work today! 🌟",
-          "You're doing fantastic! 💪",
-          "Small steps lead to big results! 📈",
-          "Boom! Goal crushed! 💥"
-        ];
-        const randomMessage = messages[Math.floor(Math.random() * messages.length)];
-        setEncouragementMessage(randomMessage);
-        setTimeout(() => setEncouragementMessage(null), 3000);
+      if (justCompleted && settings.encouragement) {
+        setEncouragementMessage(getEncouragement());
+        setTimeout(() => setEncouragementMessage(null), 4000);
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
     }
   };
 
-  const handleSaveHistory = async (goalId: string, completions: string[]) => {
+  const handleToggleFailure = async (id: string) => {
     if (!user) return;
+    const goal = goals.find(g => g.id === id);
+    if (!goal || goal.type !== 'binary') return;
+    
+    const today = getTodayISO();
+    const todayFailures = (goal.failures || []).filter(c => c === today).length;
+    
+    let newFailures;
+    let newCompletions = goal.completions;
+    
+    if (todayFailures > 0) {
+      newFailures = (goal.failures || []).filter(c => c !== today);
+    } else {
+      newFailures = [...(goal.failures || []), today];
+      newCompletions = newCompletions.filter(c => c !== today);
+    }
+      
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
+        completions: newCompletions,
+        failures: newFailures
+      });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
+    }
+  };
+
+  const handleToggleDay = async (goalId: string, dateISO: string, isFailure = false) => {
+    if (!user) return;
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+
+    let newCompletions = [...goal.completions];
+    let newFailures = [...(goal.failures || [])];
+
+    if (isFailure) {
+      if (newFailures.includes(dateISO)) {
+        newFailures = newFailures.filter(f => f !== dateISO);
+      } else {
+        newFailures.push(dateISO);
+        newCompletions = newCompletions.filter(c => c !== dateISO);
+      }
+    } else {
+      const todayCompletions = newCompletions.filter(c => c === dateISO).length;
+      const isCompleted = todayCompletions >= goal.targetValue;
+
+      if (isCompleted || todayCompletions > 0) {
+        // If it has any completions, clicking it should clear them all
+        newCompletions = newCompletions.filter(c => c !== dateISO);
+      } else {
+        // If it has 0 completions, clicking it should mark it fully completed
+        for (let i = 0; i < goal.targetValue; i++) {
+          newCompletions.push(dateISO);
+        }
+        newFailures = newFailures.filter(f => f !== dateISO);
+      }
+    }
+
     try {
       await updateDoc(doc(db, 'users', user.uid, 'goals', goalId), {
-        completions
+        completions: newCompletions,
+        failures: newFailures
       });
-      setEditingHistoryGoal(null);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${goalId}`);
     }
@@ -1508,19 +262,15 @@ function AppContent() {
     if (!user) return;
     try {
       if (goalData.id) {
-        // Update existing
         const { id, ...data } = goalData;
         await updateDoc(doc(db, 'users', user.uid, 'goals', id), data);
       } else {
-        // Create new
+        const { id, ...data } = goalData;
         const newGoal = {
-          title: goalData.title!,
-          frequency: goalData.frequency!,
-          targetValue: goalData.targetValue!,
-          targetUnit: goalData.targetUnit!,
-          smartReminders: goalData.smartReminders!,
+          ...data,
           createdAt: formatLocalISO(new Date()),
           completions: [],
+          failures: [],
           isSuspended: false
         };
         await addDoc(collection(db, 'users', user.uid, 'goals'), newGoal);
@@ -1583,18 +333,26 @@ function AppContent() {
     }
   };
 
+  useEffect(() => {
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [settings.darkMode]);
+
   if (!isAuthReady) {
-    return <div className="min-h-screen bg-[#0F172A] flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>;
+    return <div className="min-h-screen bg-[var(--bg-main)] flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>;
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#0F172A] flex flex-col items-center justify-center p-6 text-center">
+      <div className="min-h-screen bg-[var(--bg-main)] flex flex-col items-center justify-center p-6 text-center">
         <div className="w-20 h-20 bg-blue-500 rounded-3xl flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(59,130,246,0.5)]">
-          <CheckCircle2 size={40} className="text-white" />
+          <CheckCircle2 size={40} className="text-[var(--text-main)]" />
         </div>
-        <h1 className="text-3xl font-bold text-white mb-4 font-heading">Habit Tracker</h1>
-        <p className="text-[#94A3B8] mb-12 max-w-xs">Build consistency and track your daily habits seamlessly.</p>
+        <h1 className="text-3xl font-bold text-[var(--text-main)] mb-4 font-heading">Habit Tracker</h1>
+        <p className="text-[var(--text-muted)] mb-12 max-w-xs">Build consistency and track your daily habits seamlessly.</p>
         <button 
           onClick={handleLogin}
           className="w-full max-w-xs bg-white text-[#0F172A] font-bold py-4 rounded-full text-lg hover:bg-gray-100 transition-colors"
@@ -1612,116 +370,125 @@ function AppContent() {
   };
 
   return (
-    <div className={`min-h-screen bg-[#0F172A] text-white font-sans selection:bg-blue-500/30`}>
-      <div className="max-w-md mx-auto h-screen relative overflow-hidden flex flex-col">
-        <AnimatePresence mode="wait">
-          {activeTab === 'home' && (
-            <motion.div 
-              key="home"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 overflow-hidden"
-            >
-              <Dashboard 
-                goals={goals} 
-                settings={settings}
-                onToggleGoal={handleToggleGoal} 
-                onAddGoal={() => setIsAddingGoal(true)}
-                onSelectGoal={setSelectedGoal}
-              />
-            </motion.div>
-          )}
-          {activeTab === 'calendar' && (
-            <motion.div 
-              key="calendar"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 overflow-hidden"
-            >
-              <Consistency goals={goals} settings={settings} />
-            </motion.div>
-          )}
-          {activeTab === 'settings' && (
-            <motion.div 
-              key="settings"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 overflow-hidden"
-            >
-              <SettingsScreen 
-                user={userProfile} 
-                settings={settings} 
-                onUpdateSettings={handleUpdateSettings} 
-                onManageGoals={() => setIsManagingGoals(true)}
-                onLogout={handleLogout}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
-
-        <AnimatePresence>
-          {selectedGoal && (
-            <motion.div key="goal-detail">
-              <GoalDetail 
-                goal={selectedGoal} 
-                settings={settings}
-                onClose={() => setSelectedGoal(null)}
-                onSuspend={handleSuspendGoal}
-                onDelete={handleDeleteGoal}
-                onEdit={(g) => { setEditingGoal(g); setSelectedGoal(null); }}
-              />
-            </motion.div>
-          )}
-          {isManagingGoals && (
-            <motion.div key="manage-goals">
-              <ManageGoalsScreen 
-                goals={goals} 
-                onClose={() => setIsManagingGoals(false)}
-                onEditGoal={(g) => setEditingGoal(g)}
-                onSuspendGoal={handleSuspendGoal}
-                onDeleteGoal={handleDeleteGoal}
-                onEditHistory={(g) => setEditingHistoryGoal(g)}
-              />
-            </motion.div>
-          )}
-          {editingHistoryGoal && (
-            <motion.div key="edit-history">
-              <EditGoalHistoryScreen
-                goal={editingHistoryGoal}
-                settings={settings}
-                onClose={() => setEditingHistoryGoal(null)}
-                onSave={(completions) => handleSaveHistory(editingHistoryGoal.id, completions)}
-              />
-            </motion.div>
-          )}
-          {(isAddingGoal || editingGoal) && (
-            <motion.div key="new-goal">
-              <NewGoalScreen 
-                initialGoal={editingGoal}
-                onSave={handleSaveGoal}
-                onCancel={() => { setIsAddingGoal(false); setEditingGoal(null); }}
-              />
-            </motion.div>
-          )}
-          {encouragementMessage && (
-            <motion.div 
-              key="encouragement-toast"
-              initial={{ opacity: 0, y: -20, x: '-50%' }}
-              animate={{ opacity: 1, y: 0, x: '-50%' }}
-              exit={{ opacity: 0, y: -20, x: '-50%' }}
-              className="fixed top-6 left-1/2 w-[90%] max-w-sm bg-gradient-to-r from-blue-500 to-indigo-500 text-white px-4 py-3 rounded-lg shadow-2xl flex items-center justify-center gap-2 z-[100]"
-            >
-              <Zap size={20} className="text-yellow-300 fill-yellow-300" />
-              <span className="text-[14px] font-bold">{encouragementMessage}</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
+    <div 
+      className="min-h-screen bg-[var(--bg-main)] text-[var(--text-main)] flex flex-col font-sans"
+      dir={settings.language === 'he' ? 'rtl' : 'ltr'}
+    >
+      <div className="flex-1 relative overflow-hidden">
+        {activeTab === 'home' && (
+          <Dashboard 
+            goals={goals} 
+            settings={settings}
+            onToggleGoal={handleToggleGoal}
+            onToggleFailure={handleToggleFailure}
+            onAddGoal={() => setIsAddingGoal(true)}
+            onSelectGoal={setSelectedGoal}
+          />
+        )}
+        {activeTab === 'consistency' && <ConsistencyScreen goals={goals} settings={settings} />}
+        {activeTab === 'settings' && (
+          <SettingsScreen 
+            settings={settings}
+            user={userProfile}
+            onUpdateSettings={handleUpdateSettings}
+            onLogout={handleLogout}
+            onDeleteAccount={() => {}}
+            onManageGoals={() => setIsManagingGoals(true)}
+          />
+        )}
       </div>
+
+      <BottomNav activeTab={activeTab} onTabChange={setActiveTab} settings={settings} />
+
+      <AnimatePresence>
+        {selectedGoal && (
+          <GoalDetail 
+            goal={goals.find(g => g.id === selectedGoal.id) || selectedGoal}
+            settings={settings}
+            onBack={() => setSelectedGoal(null)}
+            onEditHistory={() => setEditingHistoryGoal(goals.find(g => g.id === selectedGoal.id) || selectedGoal)}
+            onToggleGoal={handleToggleGoal}
+            onToggleFailure={handleToggleFailure}
+          />
+        )}
+
+        {isAddingGoal && (
+          <NewGoalScreen 
+            settings={settings}
+            onBack={() => setIsAddingGoal(false)}
+            onSave={handleSaveGoal}
+          />
+        )}
+
+        {editingGoal && (
+          <NewGoalScreen 
+            editingGoal={goals.find(g => g.id === editingGoal.id) || editingGoal}
+            settings={settings}
+            onBack={() => setEditingGoal(null)}
+            onSave={handleSaveGoal}
+          />
+        )}
+
+        {editingHistoryGoal && (
+          <EditGoalHistoryScreen 
+            goal={goals.find(g => g.id === editingHistoryGoal.id) || editingHistoryGoal}
+            settings={settings}
+            onBack={() => setEditingHistoryGoal(null)}
+            onToggleDay={handleToggleDay}
+          />
+        )}
+
+        {isManagingGoals && (
+          <ManageGoalsScreen 
+            goals={goals}
+            settings={settings}
+            onBack={() => setIsManagingGoals(false)}
+            onEditGoal={setEditingGoal}
+            onEditHistory={setEditingHistoryGoal}
+            onDeleteGoal={handleDeleteGoal}
+            onToggleSuspend={handleSuspendGoal}
+            onAddGoal={() => {
+              setIsManagingGoals(false);
+              setIsAddingGoal(true);
+            }}
+          />
+        )}
+
+        {showExitConfirm && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-[var(--bg-card)] border border-[var(--border-main)] rounded-2xl p-6 w-full max-w-sm"
+            >
+              <h3 className="text-xl font-bold mb-2">{t('exitApp', settings.language)}</h3>
+              <p className="text-[var(--text-muted)] mb-6">{t('exitConfirm', settings.language)}</p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowExitConfirm(false)}
+                  className="flex-1 py-3 rounded-xl font-bold bg-[var(--bg-card-hover)] text-[var(--text-main)]"
+                >{t('cancel', settings.language)}</button>
+                <button 
+                  onClick={() => window.close()}
+                  className="flex-1 py-3 rounded-xl font-bold bg-red-500 text-white"
+                >{t('exit', settings.language)}</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {encouragementMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-24 left-6 right-6 bg-blue-500 text-white p-4 rounded-xl shadow-lg z-[90] flex items-center gap-3"
+          >
+            <CheckCircle2 size={24} />
+            <p className="font-bold">{encouragementMessage}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

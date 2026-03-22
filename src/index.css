@@ -1,9 +1,41 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
   --font-heading: "Outfit", sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-main);
+  }
+
+  :root {
+    --bg-main: #f8fafc;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f1f5f9;
+    --border-main: #e2e8f0;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --text-subtle: #94a3b8;
+    --bg-modal: #ffffff;
+    --bg-overlay: rgba(0, 0, 0, 0.4);
+  }
+
+  .dark {
+    --bg-main: #0F172A;
+    --bg-card: #1E293B;
+    --bg-card-hover: #334155;
+    --border-main: #334155;
+    --text-main: #ffffff;
+    --text-muted: #94A3B8;
+    --text-subtle: #64748B;
+    --bg-modal: #0F172A;
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+  }
 }
 
 @layer utilities {

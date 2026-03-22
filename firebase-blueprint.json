@@ -47,6 +47,11 @@
           "type": "string",
           "description": "The title of the goal."
         },
+        "type": {
+          "type": "string",
+          "enum": ["counter", "binary"],
+          "description": "The type of the goal."
+        },
         "frequency": {
           "type": "string",
           "enum": ["Daily", "Weekdays", "Weekly"],
@@ -61,9 +66,22 @@
           "enum": ["times", "mins", "pages", "liters"],
           "description": "The unit of measurement for the target value."
         },
+        "durationValue": {
+          "type": "number",
+          "description": "The duration value for the goal."
+        },
+        "durationUnit": {
+          "type": "string",
+          "enum": ["days", "weeks", "months", "indefinite"],
+          "description": "The unit of measurement for the duration."
+        },
         "smartReminders": {
           "type": "boolean",
           "description": "Whether smart reminders are enabled for this goal."
+        },
+        "extendDurationIfMissed": {
+          "type": "boolean",
+          "description": "Whether to extend the duration if missed."
         },
         "createdAt": {
           "type": "string",
@@ -76,6 +94,14 @@
             "description": "ISO date string (YYYY-MM-DD)"
           },
           "description": "List of dates when the goal was completed."
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "ISO date string (YYYY-MM-DD)"
+          },
+          "description": "List of dates when the goal was marked as failed."
         },
         "isSuspended": {
           "type": "boolean",
