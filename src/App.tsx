@@ -860,7 +860,7 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
             <p className="text-2xl font-bold text-white">{streak} <span className="text-sm font-medium text-[#94A3B8]">days</span></p>
           </div>
           <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
-            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">Completion</p>
+            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">All-Time Success</p>
             <p className="text-2xl font-bold text-white">{completionRate}%</p>
           </div>
         </div>
