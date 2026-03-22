@@ -53,7 +53,7 @@ service cloud.firestore {
     }
     
     function isValidDateString(dateStr) {
-      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}.*Z?)?$");
     }
 
     function hasOnlyAllowedFields(allowedFields) {
@@ -96,7 +96,7 @@ service cloud.firestore {
              hasRequiredFields(requiredFields) &&
              isValidStringLength(data.title, 1, 100) &&
              data.frequency in ['Daily', 'Weekdays', 'Weekly'] &&
-             data.targetValue is number && data.targetValue > 0 &&
+             data.targetValue is number && data.targetValue >= 0 &&
              data.targetUnit in ['times', 'mins', 'pages', 'liters'] &&
              data.smartReminders is bool &&
              isValidDateString(data.createdAt) &&

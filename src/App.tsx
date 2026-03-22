@@ -113,7 +113,16 @@ const INITIAL_GOALS: Goal[] = [];
 
 // --- Helpers ---
 
-const getTodayISO = () => new Date().toISOString().split('T')[0];
+const formatLocalISO = (date: Date) => {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const parseLocalDate = (dateStr: string) => {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(year, month - 1, day);
+};
+
+const getTodayISO = () => formatLocalISO(new Date());
 
 const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
@@ -146,8 +155,17 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
   
   const completionRate = useMemo(() => {
     if (goals.length === 0) return 0;
-    const completedCount = goals.filter(g => g.completions.includes(todayISO)).length;
-    return (completedCount / goals.length) * 100;
+    
+    let totalTarget = 0;
+    let totalCompleted = 0;
+    
+    goals.forEach(g => {
+      totalTarget += g.targetValue;
+      const todayCompletions = g.completions.filter(c => c === todayISO).length;
+      totalCompleted += Math.min(todayCompletions, g.targetValue);
+    });
+    
+    return (totalCompleted / totalTarget) * 100;
   }, [goals, todayISO]);
 
   return (
@@ -166,15 +184,26 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
       </div>
 
       <main className="flex-1 px-4 space-y-2 overflow-y-auto pb-32">
-        {goals.map(goal => (
+        {goals.map(goal => {
+          const todayCompletions = goal.completions.filter(c => c === todayISO).length;
+          const isCompleted = todayCompletions >= goal.targetValue;
+          const progress = Math.min((todayCompletions / goal.targetValue) * 100, 100);
+          
+          return (
           <div 
             key={goal.id} 
-            className="flex items-center h-[72px] px-4 bg-[#1E293B] rounded-lg border border-[#334155] cursor-pointer transition-colors active:bg-slate-800"
+            className="flex items-center h-[72px] px-4 bg-[#1E293B] rounded-lg border border-[#334155] cursor-pointer transition-colors active:bg-slate-800 relative overflow-hidden"
             onClick={() => onSelectGoal(goal)}
           >
+            {goal.targetValue > 1 && !isCompleted && (
+              <div 
+                className="absolute left-0 top-0 bottom-0 bg-blue-500/10 transition-all duration-300" 
+                style={{ width: `${progress}%` }} 
+              />
+            )}
             <div 
-              className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
-                goal.completions.includes(todayISO) 
+              className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all relative z-10 ${
+                isCompleted 
                   ? 'bg-blue-500 border-blue-500' 
                   : 'border-[#334155]'
               }`}
@@ -183,15 +212,25 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
                 onToggleGoal(goal.id);
               }}
             >
-              {goal.completions.includes(todayISO) && <Check size={14} color="white" strokeWidth={3} />}
+              {isCompleted && <Check size={14} color="white" strokeWidth={3} />}
+              {!isCompleted && goal.targetValue > 1 && todayCompletions > 0 && (
+                <span className="text-[10px] text-blue-500 font-bold">{todayCompletions}</span>
+              )}
             </div>
-            <span className={`ml-4 text-base font-medium flex-1 truncate transition-all ${
-              goal.completions.includes(todayISO) ? 'text-[#94A3B8] line-through' : 'text-white'
-            }`}>
-              {goal.title}
-            </span>
+            <div className="ml-4 flex-1 truncate relative z-10 flex justify-between items-center">
+              <span className={`text-base font-medium truncate transition-all ${
+                isCompleted ? 'text-[#94A3B8] line-through' : 'text-white'
+              }`}>
+                {goal.title}
+              </span>
+              {goal.targetValue > 1 && !isCompleted && (
+                <span className="text-xs text-[#94A3B8] font-medium ml-2">
+                  {todayCompletions} / {goal.targetValue}
+                </span>
+              )}
+            </div>
           </div>
-        ))}
+        )})}
       </main>
 
       <button 
@@ -213,10 +252,21 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
 
   // Streak calculation logic
   const stats = useMemo(() => {
-    if (!selectedGoal) return { current: 0, best: 0, total: 0 };
+    if (!selectedGoal || selectedGoal.targetValue <= 0) return { current: 0, best: 0, total: 0 };
     
-    const completions = [...selectedGoal.completions].sort();
-    if (completions.length === 0) return { current: 0, best: 0, total: 0 };
+    if (selectedGoal.completions.length === 0) return { current: 0, best: 0, total: 0 };
+
+    const completionsByDate = selectedGoal.completions.reduce((acc, date) => {
+      acc[date] = (acc[date] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    // Filter to only dates where target was met
+    const fullyCompletedDates = Object.keys(completionsByDate)
+      .filter(date => completionsByDate[date] >= selectedGoal.targetValue)
+      .sort();
+
+    if (fullyCompletedDates.length === 0) return { current: 0, best: 0, total: 0 };
 
     let bestStreak = 0;
     let tempStreak = 0;
@@ -224,12 +274,12 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    for (let i = 0; i < completions.length; i++) {
+    for (let i = 0; i < fullyCompletedDates.length; i++) {
         if (i === 0) {
             tempStreak = 1;
         } else {
-            const prev = new Date(completions[i-1]);
-            const curr = new Date(completions[i]);
+            const prev = parseLocalDate(fullyCompletedDates[i-1]);
+            const curr = parseLocalDate(fullyCompletedDates[i]);
             const diff = (curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24);
             
             if (diff === 1) {
@@ -241,7 +291,7 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
         bestStreak = Math.max(bestStreak, tempStreak);
     }
     
-    const lastCompletion = new Date(completions[completions.length - 1]);
+    const lastCompletion = parseLocalDate(fullyCompletedDates[fullyCompletedDates.length - 1]);
     const diffToToday = (today.getTime() - lastCompletion.getTime()) / (1000 * 60 * 60 * 24);
     
     let currentStreak = 0;
@@ -252,7 +302,7 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
     return {
       current: currentStreak,
       best: bestStreak,
-      total: completions.length
+      total: fullyCompletedDates.length
     };
   }, [selectedGoal]);
 
@@ -350,18 +400,22 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
               if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
               
               const dateStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const isCompleted = selectedGoal?.completions.includes(dateStr);
+              const dayCompletions = selectedGoal?.completions.filter(c => c === dateStr).length || 0;
+              const isCompleted = selectedGoal ? dayCompletions >= selectedGoal.targetValue : false;
               
               return (
                 <div 
                   key={day} 
-                  className={`w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-medium transition-all ${
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-medium transition-all relative ${
                     isCompleted 
                       ? 'bg-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.6)]' 
                       : 'text-[#94A3B8] hover:bg-white/5'
                   }`}
                 >
                   {day}
+                  {!isCompleted && dayCompletions > 0 && (
+                    <div className="absolute inset-0 rounded-full border-2 border-blue-500/50" />
+                  )}
                 </div>
               );
             })}
@@ -556,10 +610,52 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
 }) => {
   const [showManage, setShowManage] = useState(false);
 
-  const completionRate = useMemo(() => {
-    // Mocked completion rate for demo
-    return 85;
-  }, []);
+  const { streak, completionRate } = useMemo(() => {
+    if (!goal || goal.targetValue <= 0) return { streak: 0, completionRate: 0 };
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const [year, month, day] = goal.createdAt.split('-').map(Number);
+    const createdDate = new Date(year, month - 1, day);
+    createdDate.setHours(0, 0, 0, 0);
+    
+    const diffTime = today.getTime() - createdDate.getTime();
+    const daysSinceCreation = diffTime < 0 ? 1 : Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    
+    const totalPossible = daysSinceCreation * goal.targetValue;
+    const rate = totalPossible > 0 ? Math.round((goal.completions.length / totalPossible) * 100) : 0;
+    
+    let currentStreak = 0;
+    let checkDate = new Date(today);
+    
+    const completionsByDate = goal.completions.reduce((acc, date) => {
+      acc[date] = (acc[date] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    // Check if today is completed
+    const todayISO = formatLocalISO(today);
+    if ((completionsByDate[todayISO] || 0) >= goal.targetValue) {
+      currentStreak++;
+      checkDate.setDate(checkDate.getDate() - 1);
+    } else {
+      // If today is not completed, we check yesterday to see if the streak is still alive
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+    
+    while (true) {
+      const checkISO = formatLocalISO(checkDate);
+      if ((completionsByDate[checkISO] || 0) >= goal.targetValue) {
+        currentStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+    
+    return { streak: currentStreak, completionRate: Math.min(rate, 100) };
+  }, [goal.completions, goal.createdAt, goal.targetValue]);
 
   const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
 
@@ -602,12 +698,12 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
         <div className="pt-6 pb-3">
           <h1 className="text-white text-[32px] font-bold leading-tight font-heading">{goal.title}</h1>
         </div>
-        <p className="text-[#94A3B8] text-[13px] font-medium pb-6">Created {new Date(goal.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
+        <p className="text-[#94A3B8] text-[13px] font-medium pb-6">Created {parseLocalDate(goal.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
 
         <div className="flex gap-4 mb-8">
           <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
             <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">Current Streak</p>
-            <p className="text-2xl font-bold text-white">12 <span className="text-sm font-medium text-[#94A3B8]">days</span></p>
+            <p className="text-2xl font-bold text-white">{streak} <span className="text-sm font-medium text-[#94A3B8]">days</span></p>
           </div>
           <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
             <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">Completion</p>
@@ -636,11 +732,15 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
               if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
               
               const dateStr = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-              const isCompleted = goal.completions.includes(dateStr);
+              const dayCompletions = goal.completions.filter(c => c === dateStr).length;
+              const isCompleted = dayCompletions >= goal.targetValue;
               
               return (
-                <div key={day} className="w-8 h-8 flex items-center justify-center">
+                <div key={day} className="w-8 h-8 flex items-center justify-center relative">
                   {isCompleted && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />}
+                  {!isCompleted && dayCompletions > 0 && (
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500/50" />
+                  )}
                 </div>
               );
             })}
@@ -733,10 +833,10 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
       id: initialGoal?.id,
       title,
       frequency,
-      targetValue,
+      targetValue: isNaN(targetValue) ? 0 : targetValue,
       targetUnit,
       smartReminders: reminders,
-      createdAt: initialGoal?.createdAt || new Date().toISOString().split('T')[0],
+      createdAt: initialGoal?.createdAt || formatLocalISO(new Date()),
       completions: initialGoal?.completions || [],
       isSuspended: initialGoal?.isSuspended || false
     });
@@ -934,10 +1034,14 @@ function AppContent() {
     if (!goal) return;
     
     const today = getTodayISO();
-    const alreadyCompleted = goal.completions.includes(today);
-    const newCompletions = alreadyCompleted
-      ? goal.completions.filter(c => c !== today)
-      : [...goal.completions, today];
+    const todayCompletions = goal.completions.filter(c => c === today).length;
+    
+    let newCompletions;
+    if (todayCompletions >= goal.targetValue) {
+      newCompletions = goal.completions.filter(c => c !== today);
+    } else {
+      newCompletions = [...goal.completions, today];
+    }
       
     try {
       await updateDoc(doc(db, 'users', user.uid, 'goals', id), {
@@ -963,7 +1067,7 @@ function AppContent() {
           targetValue: goalData.targetValue!,
           targetUnit: goalData.targetUnit!,
           smartReminders: goalData.smartReminders!,
-          createdAt: new Date().toISOString().split('T')[0],
+          createdAt: formatLocalISO(new Date()),
           completions: [],
           isSuspended: false
         };
