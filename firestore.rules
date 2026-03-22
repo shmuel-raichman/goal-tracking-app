@@ -87,7 +87,7 @@ service cloud.firestore {
     }
 
     function isValidGoal(data) {
-      let allowedFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
+      let allowedFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'durationValue', 'durationUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
       let requiredFields = ['title', 'frequency', 'targetValue', 'targetUnit', 'smartReminders', 'createdAt', 'completions', 'isSuspended'];
       
       let hasValidCompletions = data.completions is list && data.completions.size() <= 10000;
@@ -98,6 +98,8 @@ service cloud.firestore {
              data.frequency in ['Daily', 'Weekdays', 'Weekly'] &&
              data.targetValue is number && data.targetValue >= 0 &&
              data.targetUnit in ['times', 'mins', 'pages', 'liters'] &&
+             (!('durationValue' in data) || (data.durationValue is number && data.durationValue >= 0)) &&
+             (!('durationUnit' in data) || data.durationUnit in ['days', 'weeks', 'months', 'indefinite']) &&
              data.smartReminders is bool &&
              isValidDateString(data.createdAt) &&
              hasValidCompletions &&

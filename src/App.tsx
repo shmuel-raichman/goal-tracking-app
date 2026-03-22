@@ -20,7 +20,7 @@ import {
   History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Goal, Frequency, Unit, UserProfile, AppSettings } from './types';
+import { Goal, Frequency, Unit, UserProfile, AppSettings, DurationUnit } from './types';
 import { auth, db } from './firebase';
 import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, User } from 'firebase/auth';
 import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, addDoc, getDocFromServer } from 'firebase/firestore';
@@ -41,6 +41,8 @@ interface FirestoreErrorInfo {
   authInfo: any;
 }
 
+let globalSetError: ((err: Error) => void) | null = null;
+
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -60,8 +62,13 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  const err = new Error(JSON.stringify(errInfo));
+  console.error('Firestore Error: ', err.message);
+  if (globalSetError) {
+    globalSetError(err);
+  } else {
+    throw err;
+  }
 }
 
 interface ErrorBoundaryProps {
@@ -129,6 +136,156 @@ const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 };
 
+const calculateStreak = (goal: Goal, settings: AppSettings) => {
+  if (!goal || goal.targetValue <= 0 || goal.completions.length === 0) return { current: 0, best: 0, total: 0 };
+
+  const completionsByDate = goal.completions.reduce((acc, date) => {
+    acc[date] = (acc[date] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const shouldCountDate = (date: Date) => {
+    if (goal.frequency === 'Daily') return true;
+    if (goal.frequency === 'Weekdays') {
+      const day = date.getDay();
+      return day !== 0 && day !== 6;
+    }
+    return true;
+  };
+
+  let currentStreak = 0;
+  let bestStreak = 0;
+  let totalCompletions = 0;
+  
+  if (goal.frequency === 'Weekly') {
+    // Weekly streak logic
+    let checkWeekStart = new Date(today);
+    const dayOfWeek = checkWeekStart.getDay();
+    let diff = 0;
+    if (settings.startOfWeek === 'Monday') {
+      diff = checkWeekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    } else {
+      diff = checkWeekStart.getDate() - dayOfWeek;
+    }
+    checkWeekStart.setDate(diff);
+    checkWeekStart.setHours(0, 0, 0, 0);
+    
+    // Count total weeks completed
+    // To find best streak, we need to iterate from the earliest completion week to today
+    const sortedCompletions = [...goal.completions].sort();
+    const earliestCompletion = sortedCompletions[0];
+    let iterWeekStart = new Date(parseLocalDate(earliestCompletion));
+    const iterDayOfWeek = iterWeekStart.getDay();
+    let iterDiff = 0;
+    if (settings.startOfWeek === 'Monday') {
+      iterDiff = iterWeekStart.getDate() - iterDayOfWeek + (iterDayOfWeek === 0 ? -6 : 1);
+    } else {
+      iterDiff = iterWeekStart.getDate() - iterDayOfWeek;
+    }
+    iterWeekStart.setDate(iterDiff);
+    iterWeekStart.setHours(0, 0, 0, 0);
+    
+    let tempStreak = 0;
+    
+    while (iterWeekStart <= checkWeekStart) {
+      let weekCompletions = 0;
+      for (let i = 0; i < 7; i++) {
+        let d = new Date(iterWeekStart);
+        d.setDate(d.getDate() + i);
+        const checkISO = formatLocalISO(d);
+        weekCompletions += (completionsByDate[checkISO] || 0);
+      }
+      
+      if (weekCompletions >= goal.targetValue) {
+        tempStreak++;
+        totalCompletions++;
+        bestStreak = Math.max(bestStreak, tempStreak);
+        if (iterWeekStart.getTime() === checkWeekStart.getTime()) {
+          currentStreak = tempStreak;
+        }
+      } else {
+        if (iterWeekStart.getTime() === checkWeekStart.getTime()) {
+          // If current week is not completed, current streak is the previous week's streak
+          currentStreak = tempStreak;
+        }
+        tempStreak = 0;
+      }
+      iterWeekStart.setDate(iterWeekStart.getDate() + 7);
+    }
+  } else {
+    // Daily/Weekdays streak logic
+    const sortedCompletions = [...goal.completions].sort();
+    const earliestCompletion = sortedCompletions[0];
+    let iterDate = new Date(parseLocalDate(earliestCompletion));
+    iterDate.setHours(0, 0, 0, 0);
+    
+    let tempStreak = 0;
+    
+    while (iterDate <= today) {
+      if (!shouldCountDate(iterDate)) {
+        if (iterDate.getTime() === today.getTime()) {
+          currentStreak = tempStreak;
+        }
+        iterDate.setDate(iterDate.getDate() + 1);
+        continue;
+      }
+      
+      const checkISO = formatLocalISO(iterDate);
+      if ((completionsByDate[checkISO] || 0) >= goal.targetValue) {
+        tempStreak++;
+        totalCompletions++;
+        bestStreak = Math.max(bestStreak, tempStreak);
+        if (iterDate.getTime() === today.getTime()) {
+          currentStreak = tempStreak;
+        }
+      } else {
+        if (iterDate.getTime() === today.getTime()) {
+          currentStreak = tempStreak;
+        }
+        tempStreak = 0;
+      }
+      iterDate.setDate(iterDate.getDate() + 1);
+    }
+  }
+
+  return { current: currentStreak, best: bestStreak, total: totalCompletions };
+};
+
+const getGoalDurationProgress = (goal: Goal, successfulDays: number) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const [year, month, day] = goal.createdAt.split('-').map(Number);
+  let createdDate = new Date(year, month - 1, day);
+  createdDate.setHours(0, 0, 0, 0);
+
+  if (goal.completions.length > 0) {
+    const sortedCompletions = [...goal.completions].sort();
+    const earliestCompletion = sortedCompletions[0];
+    const [eYear, eMonth, eDay] = earliestCompletion.split('-').map(Number);
+    const earliestDate = new Date(eYear, eMonth - 1, eDay);
+    earliestDate.setHours(0, 0, 0, 0);
+    if (earliestDate < createdDate) createdDate = earliestDate;
+  }
+  
+  const diffTime = today.getTime() - createdDate.getTime();
+  const daysSinceCreation = Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1;
+  
+  const daysActive = goal.extendDurationIfMissed ? successfulDays : daysSinceCreation;
+
+  let totalDurationDays = 0;
+  if (goal.durationUnit && goal.durationUnit !== 'indefinite' && goal.durationValue) {
+    if (goal.durationUnit === 'days') totalDurationDays = goal.durationValue;
+    else if (goal.durationUnit === 'weeks') totalDurationDays = goal.durationValue * 7;
+    else if (goal.durationUnit === 'months') totalDurationDays = goal.durationValue * 30;
+  }
+  
+  return { daysActive, totalDurationDays };
+};
+
 // --- Components ---
 
 const BottomNav = ({ activeTab, onTabChange }: { activeTab: string, onTabChange: (tab: string) => void }) => (
@@ -145,8 +302,9 @@ const BottomNav = ({ activeTab, onTabChange }: { activeTab: string, onTabChange:
   </nav>
 );
 
-const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: { 
+const Dashboard = ({ goals, settings, onToggleGoal, onAddGoal, onSelectGoal }: { 
   goals: Goal[], 
+  settings: AppSettings,
   onToggleGoal: (id: string) => void, 
   onAddGoal: () => void,
   onSelectGoal: (goal: Goal) => void 
@@ -205,6 +363,8 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
           const todayCompletions = goal.completions.filter(c => c === todayISO).length;
           const isCompleted = todayCompletions >= goal.targetValue;
           const progress = Math.min((todayCompletions / goal.targetValue) * 100, 100);
+          const stats = calculateStreak(goal, settings);
+          const { daysActive, totalDurationDays } = getGoalDurationProgress(goal, stats.total);
           
           return (
           <div 
@@ -234,16 +394,31 @@ const Dashboard = ({ goals, onToggleGoal, onAddGoal, onSelectGoal }: {
                 <span className="text-[10px] text-blue-500 font-bold">{todayCompletions}</span>
               )}
             </div>
-            <div className="ml-4 flex-1 truncate relative z-10 flex justify-between items-center">
-              <span className={`text-base font-medium truncate transition-all ${
-                isCompleted ? 'text-[#94A3B8] line-through' : 'text-white'
-              }`}>
-                {goal.title}
-              </span>
-              {goal.targetValue > 1 && !isCompleted && (
-                <span className="text-xs text-[#94A3B8] font-medium ml-2">
-                  {todayCompletions} / {goal.targetValue}
+            <div className="ml-4 flex-1 truncate relative z-10 flex flex-col justify-center">
+              <div className="flex justify-between items-center">
+                <span className={`text-base font-medium truncate transition-all ${
+                  isCompleted ? 'text-[#94A3B8] line-through' : 'text-white'
+                }`}>
+                  {goal.title}
                 </span>
+                {goal.targetValue > 1 && !isCompleted && (
+                  <span className="text-xs text-[#94A3B8] font-medium ml-2">
+                    {todayCompletions} / {goal.targetValue}
+                  </span>
+                )}
+              </div>
+              {totalDurationDays > 0 && (
+                <div className="flex items-center gap-2 mt-0.5">
+                  <div className="flex-1 h-1 bg-[#334155] rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-500/50 rounded-full" 
+                      style={{ width: `${Math.min((daysActive / totalDurationDays) * 100, 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-[#94A3B8] font-medium whitespace-nowrap">
+                    {Math.min(daysActive, totalDurationDays)}/{totalDurationDays}d
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -269,59 +444,9 @@ const Consistency = ({ goals, settings }: { goals: Goal[], settings: AppSettings
 
   // Streak calculation logic
   const stats = useMemo(() => {
-    if (!selectedGoal || selectedGoal.targetValue <= 0) return { current: 0, best: 0, total: 0 };
-    
-    if (selectedGoal.completions.length === 0) return { current: 0, best: 0, total: 0 };
-
-    const completionsByDate = selectedGoal.completions.reduce((acc, date) => {
-      acc[date] = (acc[date] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    
-    // Filter to only dates where target was met
-    const fullyCompletedDates = Object.keys(completionsByDate)
-      .filter(date => completionsByDate[date] >= selectedGoal.targetValue)
-      .sort();
-
-    if (fullyCompletedDates.length === 0) return { current: 0, best: 0, total: 0 };
-
-    let bestStreak = 0;
-    let tempStreak = 0;
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    for (let i = 0; i < fullyCompletedDates.length; i++) {
-        if (i === 0) {
-            tempStreak = 1;
-        } else {
-            const prev = parseLocalDate(fullyCompletedDates[i-1]);
-            const curr = parseLocalDate(fullyCompletedDates[i]);
-            const diff = (curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24);
-            
-            if (diff === 1) {
-                tempStreak++;
-            } else if (diff > 1) {
-                tempStreak = 1;
-            }
-        }
-        bestStreak = Math.max(bestStreak, tempStreak);
-    }
-    
-    const lastCompletion = parseLocalDate(fullyCompletedDates[fullyCompletedDates.length - 1]);
-    const diffToToday = (today.getTime() - lastCompletion.getTime()) / (1000 * 60 * 60 * 24);
-    
-    let currentStreak = 0;
-    if (diffToToday <= 1) {
-        currentStreak = tempStreak;
-    }
-
-    return {
-      current: currentStreak,
-      best: bestStreak,
-      total: fullyCompletedDates.length
-    };
-  }, [selectedGoal]);
+    if (!selectedGoal) return { current: 0, best: 0, total: 0 };
+    return calculateStreak(selectedGoal, settings);
+  }, [selectedGoal, settings]);
 
   // Calendar logic for current month
   const calendarDays = useMemo(() => {
@@ -751,65 +876,41 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
 }) => {
   const [showManage, setShowManage] = useState(false);
 
-  const { streak, completionRate } = useMemo(() => {
-    if (!goal || goal.targetValue <= 0) return { streak: 0, completionRate: 0 };
+  useModalBackHandler(showManage, () => setShowManage(false), 'manage-goal');
 
+  const { streak, completionRate, daysActive, totalDurationDays } = useMemo(() => {
+    if (!goal || goal.targetValue <= 0) return { streak: 0, completionRate: 0, daysActive: 0, totalDurationDays: 0 };
+
+    const stats = calculateStreak(goal, settings);
+    const { daysActive, totalDurationDays } = getGoalDurationProgress(goal, stats.total);
+    const { daysActive: daysSinceCreation } = getGoalDurationProgress({ ...goal, extendDurationIfMissed: false }, 0);
+    
+    const effectiveDays = totalDurationDays > 0 ? Math.min(daysSinceCreation, totalDurationDays) : daysSinceCreation;
+    
+    let totalPossibleDays = 0;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    const [year, month, day] = goal.createdAt.split('-').map(Number);
-    let createdDate = new Date(year, month - 1, day);
-    createdDate.setHours(0, 0, 0, 0);
-
-    // If there are completions before the creation date, use the earliest completion date
-    if (goal.completions.length > 0) {
-      const sortedCompletions = [...goal.completions].sort();
-      const earliestCompletion = sortedCompletions[0];
-      const [eYear, eMonth, eDay] = earliestCompletion.split('-').map(Number);
-      const earliestDate = new Date(eYear, eMonth - 1, eDay);
-      earliestDate.setHours(0, 0, 0, 0);
-      
-      if (earliestDate < createdDate) {
-        createdDate = earliestDate;
+    if (goal.frequency === 'Daily') {
+      totalPossibleDays = effectiveDays;
+    } else if (goal.frequency === 'Weekdays') {
+      // Calculate actual weekdays in the effective period
+      let count = 0;
+      for (let i = 0; i < effectiveDays; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const day = d.getDay();
+        if (day !== 0 && day !== 6) count++;
       }
+      totalPossibleDays = count;
+    } else if (goal.frequency === 'Weekly') {
+      totalPossibleDays = Math.ceil(effectiveDays / 7);
     }
     
-    const diffTime = today.getTime() - createdDate.getTime();
-    const daysSinceCreation = diffTime < 0 ? 1 : Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const rate = totalPossibleDays > 0 ? Math.round((stats.total / totalPossibleDays) * 100) : 0;
     
-    const totalPossible = daysSinceCreation * goal.targetValue;
-    const rate = totalPossible > 0 ? Math.round((goal.completions.length / totalPossible) * 100) : 0;
-    
-    let currentStreak = 0;
-    let checkDate = new Date(today);
-    
-    const completionsByDate = goal.completions.reduce((acc, date) => {
-      acc[date] = (acc[date] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    
-    // Check if today is completed
-    const todayISO = formatLocalISO(today);
-    if ((completionsByDate[todayISO] || 0) >= goal.targetValue) {
-      currentStreak++;
-      checkDate.setDate(checkDate.getDate() - 1);
-    } else {
-      // If today is not completed, we check yesterday to see if the streak is still alive
-      checkDate.setDate(checkDate.getDate() - 1);
-    }
-    
-    while (true) {
-      const checkISO = formatLocalISO(checkDate);
-      if ((completionsByDate[checkISO] || 0) >= goal.targetValue) {
-        currentStreak++;
-        checkDate.setDate(checkDate.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-    
-    return { streak: currentStreak, completionRate: Math.min(rate, 100) };
-  }, [goal.completions, goal.createdAt, goal.targetValue]);
+    return { streak: stats.current, completionRate: Math.min(rate, 100), daysActive: daysSinceCreation, totalDurationDays };
+  }, [goal.completions, goal.createdAt, goal.targetValue, goal.durationUnit, goal.durationValue, goal.frequency, settings.startOfWeek]);
 
   const monthName = new Intl.DateTimeFormat('en-US', { month: 'long' }).format(new Date());
 
@@ -862,6 +963,28 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
           <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
             <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">All-Time Success</p>
             <p className="text-2xl font-bold text-white">{completionRate}%</p>
+          </div>
+          <div className="flex-1 bg-[#1E293B] p-4 rounded-lg border border-[#334155]">
+            <p className="text-[11px] text-[#94A3B8] font-bold mb-1 uppercase tracking-wider">
+              {totalDurationDays > 0 ? "Progress" : (goal.extendDurationIfMissed ? "Successful Days" : "Active For")}
+            </p>
+            <div className="text-2xl font-bold text-white flex items-baseline">
+              {totalDurationDays > 0 ? (
+                <>
+                  {Math.min(daysActive, totalDurationDays)}<span className="text-sm font-medium text-[#94A3B8] mx-1">/</span>{totalDurationDays}
+                  <span className="text-sm font-medium text-[#94A3B8] ml-1">days</span>
+                </>
+              ) : (
+                <>
+                  {!goal.extendDurationIfMissed && daysActive >= 7 && daysActive % 7 === 0 ? Math.floor(daysActive / 7) : daysActive}
+                  <span className="text-sm font-medium text-[#94A3B8] ml-1">
+                    {!goal.extendDurationIfMissed && daysActive >= 7 && daysActive % 7 === 0 
+                      ? (Math.floor(daysActive / 7) === 1 ? 'week' : 'weeks') 
+                      : (daysActive === 1 ? 'day' : 'days')}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
         </div>
         
@@ -991,7 +1114,10 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
   const [frequency, setFrequency] = useState<Frequency>(initialGoal?.frequency || 'Daily');
   const [targetValue, setTargetValue] = useState<number>(initialGoal?.targetValue || 0);
   const [targetUnit, setTargetUnit] = useState<Unit>(initialGoal?.targetUnit || 'times');
+  const [durationValue, setDurationValue] = useState<number>(initialGoal?.durationValue || 0);
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>(initialGoal?.durationUnit || 'indefinite');
   const [reminders, setReminders] = useState(initialGoal?.smartReminders || false);
+  const [extendDuration, setExtendDuration] = useState(initialGoal?.extendDurationIfMissed || false);
   const [showToast, setShowToast] = useState(false);
 
   const handleSave = () => {
@@ -1002,7 +1128,10 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
       frequency,
       targetValue: isNaN(targetValue) ? 0 : targetValue,
       targetUnit,
+      durationValue: isNaN(durationValue) ? 0 : durationValue,
+      durationUnit,
       smartReminders: reminders,
+      extendDurationIfMissed: extendDuration,
       createdAt: initialGoal?.createdAt || formatLocalISO(new Date()),
       completions: initialGoal?.completions || [],
       isSuspended: initialGoal?.isSuspended || false
@@ -1091,6 +1220,33 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
           </div>
         </section>
 
+        <section className="flex flex-col gap-4">
+          <h3 className="text-[13px] font-bold text-[#94A3B8] uppercase tracking-wider">Duration</h3>
+          <div className="flex items-center gap-4 bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
+            <input 
+              type="number"
+              value={durationValue || ''}
+              onChange={(e) => setDurationValue(Number(e.target.value))}
+              disabled={durationUnit === 'indefinite'}
+              className="flex-1 bg-[#0F172A] border-0 rounded-md text-xl font-bold text-white placeholder:text-[#94A3B8] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading disabled:opacity-50"
+              placeholder={durationUnit === 'indefinite' ? "∞" : "0"}
+            />
+            <div className="w-[120px] relative">
+              <select 
+                value={durationUnit}
+                onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
+                className="w-full appearance-none bg-[#0F172A] border-0 rounded-md text-[15px] font-bold text-white focus:ring-1 focus:ring-blue-500 py-3 pl-4 pr-10"
+              >
+                <option value="indefinite">forever</option>
+                <option value="days">days</option>
+                <option value="weeks">weeks</option>
+                <option value="months">months</option>
+              </select>
+              <ChevronDown size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] pointer-events-none" />
+            </div>
+          </div>
+        </section>
+
         <section className="flex flex-col gap-4 mt-2">
           <div className="flex items-center justify-between bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
             <div className="flex flex-col">
@@ -1104,6 +1260,24 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
               <motion.div 
                 className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
                 animate={{ x: reminders ? 16 : 0 }}
+              />
+            </button>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-4 mt-2">
+          <div className="flex items-center justify-between bg-[#1E293B] rounded-lg p-4 border border-[#334155]">
+            <div className="flex flex-col">
+              <span className="text-[16px] font-bold text-white">Extend Duration</span>
+              <span className="text-[13px] text-[#94A3B8]">Count successful days, not calendar days</span>
+            </div>
+            <button 
+              onClick={() => setExtendDuration(!extendDuration)}
+              className={`relative w-10 h-6 rounded-full transition-colors ${extendDuration ? 'bg-blue-500' : 'bg-[#334155]'}`}
+            >
+              <motion.div 
+                className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
+                animate={{ x: extendDuration ? 16 : 0 }}
               />
             </button>
           </div>
@@ -1129,7 +1303,71 @@ const NewGoalScreen = ({ onSave, onCancel, initialGoal }: {
 
 // --- Main App ---
 
+let modalCount = 0;
+let backStepsPending = 0;
+let backTimeout: any = null;
+
+// Clear any leftover modal state from page refreshes
+if (typeof window !== 'undefined' && window.history.state?.modalIndex) {
+  window.history.replaceState(null, '');
+}
+
+function requestBack() {
+  backStepsPending++;
+  if (!backTimeout) {
+    backTimeout = setTimeout(() => {
+      window.history.go(-backStepsPending);
+      backStepsPending = 0;
+      backTimeout = null;
+    }, 10);
+  }
+}
+
+function cancelBack() {
+  if (backStepsPending > 0) {
+    backStepsPending--;
+    if (backStepsPending === 0 && backTimeout) {
+      clearTimeout(backTimeout);
+      backTimeout = null;
+    }
+  }
+}
+
+function useModalBackHandler(isOpen: boolean, close: () => void, modalName: string) {
+  useEffect(() => {
+    if (!isOpen) return;
+
+    modalCount++;
+    const currentModalIndex = modalCount;
+    
+    cancelBack();
+    
+    if (window.history.state?.modalName === modalName && window.history.state?.modalIndex === currentModalIndex - 1) {
+      window.history.replaceState({ modalIndex: currentModalIndex, modalName }, '');
+    } else {
+      window.history.pushState({ modalIndex: currentModalIndex, modalName }, '');
+    }
+
+    const handlePopState = (e: PopStateEvent) => {
+      if (!e.state?.modalIndex || e.state.modalIndex < currentModalIndex) {
+        close();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      if (window.history.state?.modalIndex >= currentModalIndex) {
+        requestBack();
+      }
+      modalCount--;
+    };
+  }, [isOpen, close, modalName]);
+}
+
 function AppContent() {
+  const [error, setError] = useState<Error | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   
@@ -1146,6 +1384,19 @@ function AppContent() {
     notifications: true,
     startOfWeek: 'Sunday'
   });
+
+  useModalBackHandler(!!selectedGoal, () => setSelectedGoal(null), 'detail');
+  useModalBackHandler(isAddingGoal, () => setIsAddingGoal(false), 'add');
+  useModalBackHandler(!!editingGoal, () => setEditingGoal(null), 'edit');
+  useModalBackHandler(!!editingHistoryGoal, () => setEditingHistoryGoal(null), 'history');
+  useModalBackHandler(isManagingGoals, () => setIsManagingGoals(false), 'manage');
+
+  useEffect(() => {
+    globalSetError = setError;
+    return () => { globalSetError = null; };
+  }, []);
+
+  if (error) throw error;
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -1374,6 +1625,7 @@ function AppContent() {
             >
               <Dashboard 
                 goals={goals} 
+                settings={settings}
                 onToggleGoal={handleToggleGoal} 
                 onAddGoal={() => setIsAddingGoal(true)}
                 onSelectGoal={setSelectedGoal}
