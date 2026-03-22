@@ -16,7 +16,8 @@ import {
   Zap,
   Play,
   Edit2,
-  LogOut
+  LogOut,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Goal, Frequency, Unit, UserProfile, AppSettings } from './types';
@@ -540,12 +541,133 @@ const SettingsScreen = ({ user, settings, onUpdateSettings, onManageGoals, onLog
   </div>
 );
 
-const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDeleteGoal }: { 
+const EditGoalHistoryScreen = ({ goal, settings, onClose, onSave }: {
+  goal: Goal,
+  settings: AppSettings,
+  onClose: () => void,
+  onSave: (completions: string[]) => void
+}) => {
+  const [completions, setCompletions] = useState<string[]>(goal.completions);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const handleToggleDay = (dateStr: string) => {
+    const count = completions.filter(c => c === dateStr).length;
+    if (count >= goal.targetValue) {
+      setCompletions(completions.filter(c => c !== dateStr));
+    } else {
+      const newCompletions = completions.filter(c => c !== dateStr);
+      for (let i = 0; i < goal.targetValue; i++) {
+        newCompletions.push(dateStr);
+      }
+      setCompletions(newCompletions);
+    }
+  };
+
+  const calendarDays = useMemo(() => {
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth();
+    let firstDay = new Date(year, month, 1).getDay();
+    
+    if (settings.startOfWeek === 'Monday') {
+      firstDay = firstDay === 0 ? 6 : firstDay - 1;
+    }
+    
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    
+    const days = [];
+    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let i = 1; i <= daysInMonth; i++) days.push(i);
+    return days;
+  }, [currentMonth, settings.startOfWeek]);
+
+  const monthName = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(currentMonth);
+
+  const handlePrevMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1));
+  };
+
+  return (
+    <motion.div 
+      initial={{ x: '100%' }}
+      animate={{ x: 0 }}
+      exit={{ x: '100%' }}
+      className="fixed inset-0 bg-[#0F172A] z-[70] flex flex-col"
+    >
+      <header className="flex items-center p-4 justify-between border-b border-[#334155]">
+        <button onClick={onClose} className="p-2 text-white hover:bg-[#1E293B] rounded-full">
+          <ChevronLeft size={24} />
+        </button>
+        <h2 className="text-white text-[18px] font-bold tracking-tight font-heading">Edit History</h2>
+        <button onClick={() => onSave(completions)} className="text-blue-500 font-bold px-4 py-2 hover:bg-blue-500/10 rounded-lg">
+          Save
+        </button>
+      </header>
+
+      <main className="flex-1 px-4 py-6 overflow-y-auto">
+        <div className="bg-[#1E293B] p-6 rounded-lg border border-[#334155]">
+          <div className="flex items-center justify-between mb-6">
+            <button onClick={handlePrevMonth} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/5 rounded-full">
+              <ChevronLeft size={20} />
+            </button>
+            <h3 className="text-white font-bold">{monthName}</h3>
+            <button onClick={handleNextMonth} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/5 rounded-full">
+              <ChevronRight size={20} />
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-7 gap-2 mb-2">
+            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => {
+              const adjustedDay = settings.startOfWeek === 'Monday' ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'][i] : day;
+              return (
+                <div key={i} className="text-center text-[11px] font-bold text-[#94A3B8]">{adjustedDay}</div>
+              );
+            })}
+          </div>
+          
+          <div className="grid grid-cols-7 gap-2">
+            {calendarDays.map((day, i) => {
+              if (day === null) return <div key={`empty-${i}`} className="w-8 h-8" />;
+              
+              const dateStr = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const dayCompletions = completions.filter(c => c === dateStr).length;
+              const isCompleted = dayCompletions >= goal.targetValue;
+              
+              return (
+                <button 
+                  key={day} 
+                  onClick={() => handleToggleDay(dateStr)}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-medium transition-all relative ${
+                    isCompleted 
+                      ? 'bg-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.6)]' 
+                      : 'text-[#94A3B8] hover:bg-white/5'
+                  }`}
+                >
+                  {day}
+                  {!isCompleted && dayCompletions > 0 && (
+                    <div className="absolute inset-0 rounded-full border-2 border-blue-500/50" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <p className="text-center text-[11px] text-[#94A3B8] mt-6">Tap a day to toggle completion.</p>
+      </main>
+    </motion.div>
+  );
+};
+
+const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDeleteGoal, onEditHistory }: { 
   goals: Goal[], 
   onClose: () => void,
   onEditGoal: (goal: Goal) => void,
   onSuspendGoal: (id: string) => void,
-  onDeleteGoal: (id: string) => void
+  onDeleteGoal: (id: string) => void,
+  onEditHistory: (goal: Goal) => void
 }) => (
   <motion.div 
     initial={{ x: '100%' }}
@@ -585,6 +707,9 @@ const ManageGoalsScreen = ({ goals, onClose, onEditGoal, onSuspendGoal, onDelete
                 <button onClick={() => onSuspendGoal(goal.id)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title={goal.isSuspended ? "Resume Goal" : "Suspend Goal"}>
                   {goal.isSuspended ? <Play size={18} /> : <Pause size={18} />}
                 </button>
+                <button onClick={() => onEditHistory(goal)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Edit History">
+                  <History size={18} />
+                </button>
                 <button onClick={() => onEditGoal(goal)} className="p-2 text-[#94A3B8] hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Edit Goal">
                   <Edit2 size={18} />
                 </button>
@@ -617,8 +742,21 @@ const GoalDetail = ({ goal, settings, onClose, onSuspend, onDelete, onEdit }: {
     today.setHours(0, 0, 0, 0);
     
     const [year, month, day] = goal.createdAt.split('-').map(Number);
-    const createdDate = new Date(year, month - 1, day);
+    let createdDate = new Date(year, month - 1, day);
     createdDate.setHours(0, 0, 0, 0);
+
+    // If there are completions before the creation date, use the earliest completion date
+    if (goal.completions.length > 0) {
+      const sortedCompletions = [...goal.completions].sort();
+      const earliestCompletion = sortedCompletions[0];
+      const [eYear, eMonth, eDay] = earliestCompletion.split('-').map(Number);
+      const earliestDate = new Date(eYear, eMonth - 1, eDay);
+      earliestDate.setHours(0, 0, 0, 0);
+      
+      if (earliestDate < createdDate) {
+        createdDate = earliestDate;
+      }
+    }
     
     const diffTime = today.getTime() - createdDate.getTime();
     const daysSinceCreation = diffTime < 0 ? 1 : Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
@@ -971,6 +1109,7 @@ function AppContent() {
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
   const [isAddingGoal, setIsAddingGoal] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
+  const [editingHistoryGoal, setEditingHistoryGoal] = useState<Goal | null>(null);
   const [isManagingGoals, setIsManagingGoals] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: true,
@@ -1049,6 +1188,18 @@ function AppContent() {
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${id}`);
+    }
+  };
+
+  const handleSaveHistory = async (goalId: string, completions: string[]) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'goals', goalId), {
+        completions
+      });
+      setEditingHistoryGoal(null);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${goalId}`);
     }
   };
 
@@ -1232,6 +1383,17 @@ function AppContent() {
                 onEditGoal={(g) => setEditingGoal(g)}
                 onSuspendGoal={handleSuspendGoal}
                 onDeleteGoal={handleDeleteGoal}
+                onEditHistory={(g) => setEditingHistoryGoal(g)}
+              />
+            </motion.div>
+          )}
+          {editingHistoryGoal && (
+            <motion.div key="edit-history">
+              <EditGoalHistoryScreen
+                goal={editingHistoryGoal}
+                settings={settings}
+                onClose={() => setEditingHistoryGoal(null)}
+                onSave={handleSaveHistory}
               />
             </motion.div>
           )}
