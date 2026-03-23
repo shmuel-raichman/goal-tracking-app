@@ -36,7 +36,7 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, settings, onToggleGoal
         />
       )}
       
-      <div className="w-auto flex-shrink-0 flex items-center justify-start relative z-10">
+      <div className="w-auto flex-shrink-0 flex items-center justify-start relative z-10 me-4">
         {goal.type === 'binary' ? (
           <div className="flex items-center gap-3">
             <button 
@@ -86,7 +86,7 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, settings, onToggleGoal
         )}
       </div>
 
-      <div dir="auto" className="flex-1 truncate relative z-10 flex flex-col justify-center ms-8">
+      <div dir="auto" className="flex-1 min-w-0 relative z-10 flex flex-col justify-center">
         <div className="flex justify-between items-center">
           <span 
             className={`text-base font-medium truncate transition-all ${
@@ -111,6 +111,19 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, settings, onToggleGoal
             </div>
             <span className="text-[10px] text-[var(--text-muted)] font-medium whitespace-nowrap">
               {Math.min(daysActive, totalDurationDays)}/{totalDurationDays}d
+            </span>
+          </div>
+        )}
+        {goal.type === 'book' && goal.endPage && (
+          <div className="flex items-center gap-3 mt-1">
+            <div className="flex-1 h-1.5 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-emerald-500/50 rounded-full" 
+                style={{ width: `${((goal.completedSides?.length || 0) / ((goal.endPage - (goal.pageStartAt || 1) + 1) * 2)) * 100}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-[var(--text-muted)] font-medium whitespace-nowrap">
+              {goal.completedSides?.length || 0}/{(goal.endPage - (goal.pageStartAt || 1) + 1) * 2}
             </span>
           </div>
         )}

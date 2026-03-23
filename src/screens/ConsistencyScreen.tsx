@@ -94,7 +94,7 @@ export const ConsistencyScreen = ({ goals, settings }: ConsistencyScreenProps) =
         <p className="text-[var(--text-muted)] text-sm mt-1">{t('trackOverall', lang)}</p>
       </header>
       
-      <main className="flex-1 p-6 overflow-y-auto pb-32">
+      <main className="flex-1 p-6 overflow-y-auto pb-6">
         <div className="mb-6 relative z-10">
           <select 
             value={selectedGoalId}

@@ -23,7 +23,7 @@ export const SettingsScreen = ({ settings, user, onUpdateSettings, onLogout, onD
         <p className="text-[var(--text-muted)] text-sm mt-1">{t('manageAccount', lang)}</p>
       </header>
       
-      <main className="flex-1 p-6 overflow-y-auto pb-32">
+      <main className="flex-1 p-6 overflow-y-auto pb-6">
         {user && (
           <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border-main)] p-4 mb-8 flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center">
@@ -64,7 +64,26 @@ export const SettingsScreen = ({ settings, user, onUpdateSettings, onLogout, onD
                   <span className="font-medium">{t('notifications', lang)}</span>
                 </div>
                 <div 
-                  onClick={() => onUpdateSettings({ notifications: !settings.notifications })}
+                  onClick={async () => {
+                    if (!settings.notifications) {
+                      if ('Notification' in window) {
+                        const permission = await Notification.requestPermission();
+                        if (permission === 'granted') {
+                          onUpdateSettings({ notifications: true });
+                          new Notification(t('notificationsEnabled', lang), {
+                            body: t('notificationsEnabledDesc', lang),
+                            icon: '/vite.svg'
+                          });
+                        } else {
+                          alert(t('notificationsDenied', lang));
+                        }
+                      } else {
+                        alert(t('notificationsNotSupported', lang));
+                      }
+                    } else {
+                      onUpdateSettings({ notifications: false });
+                    }
+                  }}
                   className={`w-12 h-6 rounded-full relative p-1 cursor-pointer transition-colors ${settings.notifications ? 'bg-blue-500' : 'bg-[var(--bg-card-hover)]'}`}
                 >
                   <motion.div 

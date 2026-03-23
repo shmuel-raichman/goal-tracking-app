@@ -6,7 +6,7 @@ import { AppSettings } from '../types';
 export const BottomNav = ({ activeTab, onTabChange, settings }: { activeTab: string, onTabChange: (tab: string) => void, settings: AppSettings }) => {
   const lang = settings.language || 'en';
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-[var(--bg-main)] border-t border-[var(--border-main)] px-6 pb-8 pt-3 flex justify-between items-center z-50">
+    <nav className="bg-[var(--bg-main)] border-t border-[var(--border-main)] px-6 pb-safe pt-3 flex justify-between items-center z-50">
       <button onClick={() => onTabChange('home')} className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'home' ? 'text-blue-500' : 'text-[var(--text-muted)]'}`}>
         <Home size={24} fill={activeTab === 'home' ? 'currentColor' : 'none'} />
         <span className="text-[10px] font-medium">{t('home', lang)}</span>

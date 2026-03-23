@@ -49,7 +49,7 @@ export const EditGoalHistoryScreen = ({ goal, settings, onBack, onToggleDay }: E
         </div>
       </header>
       
-      <main className="flex-1 p-6 overflow-y-auto pb-32">
+      <main className="flex-1 p-6 overflow-y-auto pb-safe">
         <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border-main)] p-4 mb-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-lg font-bold">{t('monthNames', lang)[currentMonth]} {currentYear}</h2>

@@ -14,9 +14,10 @@ interface GoalDetailProps {
   onEditHistory: () => void;
   onToggleGoal: (id: string) => void;
   onToggleFailure: (id: string) => void;
+  onToggleBookSide?: (goalId: string, sideId: string) => void;
 }
 
-export const GoalDetail = ({ goal, settings, onBack, onEditHistory, onToggleGoal, onToggleFailure }: GoalDetailProps) => {
+export const GoalDetail = ({ goal, settings, onBack, onEditHistory, onToggleGoal, onToggleFailure, onToggleBookSide }: GoalDetailProps) => {
   const todayISO = getTodayISO();
   const todayCompletions = goal.completions.filter(c => c === todayISO).length;
   const todayFailures = goal.failures?.filter(c => c === todayISO).length || 0;
@@ -52,7 +53,7 @@ export const GoalDetail = ({ goal, settings, onBack, onEditHistory, onToggleGoal
         <h1 className="text-xl font-bold font-heading truncate flex-1">{goal.title}</h1>
       </header>
       
-      <main className="flex-1 p-6 overflow-y-auto pb-32">
+      <main className="flex-1 p-6 overflow-y-auto pb-safe">
         <div className="bg-gradient-to-br from-blue-500/20 to-indigo-500/20 border border-blue-500/30 rounded-2xl p-6 mb-8 text-center">
           <p className="text-blue-200 text-sm font-medium mb-2 italic">"{encouragement}"</p>
           <div className="flex justify-center items-baseline gap-2">
@@ -78,7 +79,7 @@ export const GoalDetail = ({ goal, settings, onBack, onEditHistory, onToggleGoal
           </div>
         </div>
 
-        {totalDurationDays > 0 && (
+        {totalDurationDays > 0 && goal.type !== 'book' && (
           <div className="bg-[var(--bg-card)] border border-[var(--border-main)] rounded-xl p-4 mb-8">
             <div className="flex justify-between items-center mb-3">
               <div className="flex items-center gap-2">
@@ -97,6 +98,62 @@ export const GoalDetail = ({ goal, settings, onBack, onEditHistory, onToggleGoal
             <p className="text-[10px] text-[var(--text-subtle)] mt-2 text-center uppercase font-bold tracking-widest">
               {totalDurationDays - daysActive > 0 ? `${totalDurationDays - daysActive} ${t('days', lang)}` : t('durationCompleted', lang)}
             </p>
+          </div>
+        )}
+
+        {goal.type === 'book' && goal.endPage && (
+          <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border-main)] p-4 mb-8">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold">{t('bookProgress', lang)}</h2>
+              <span className="text-xs font-bold bg-[var(--bg-card-hover)] px-2 py-1 rounded-md">
+                {goal.completedSides?.length || 0} / {(goal.endPage - (goal.pageStartAt || 1) + 1) * 2}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mb-4">
+               <div className="flex-1 h-2 bg-[var(--bg-card-hover)] rounded-full overflow-hidden">
+                 <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${((goal.completedSides?.length || 0) / ((goal.endPage - (goal.pageStartAt || 1) + 1) * 2)) * 100}%` }} />
+               </div>
+            </div>
+            
+            <div className="flex items-center gap-4 text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-6">
+              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-emerald-500"></div>{t('completed', lang)}</div>
+              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500"></div>{t('inProgress', lang)}</div>
+            </div>
+            
+            <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 max-h-96 overflow-y-auto p-1 no-scrollbar">
+              {Array.from({ length: goal.endPage - (goal.pageStartAt || 1) + 1 }).map((_, i) => {
+                const pageNum = (goal.pageStartAt || 1) + i;
+                const sideA = `${pageNum}a`;
+                const sideB = `${pageNum}b`;
+                const isACompleted = goal.completedSides?.includes(sideA);
+                const isBCompleted = goal.completedSides?.includes(sideB);
+                const isAInProgress = goal.inProgressSides?.includes(sideA);
+                const isBInProgress = goal.inProgressSides?.includes(sideB);
+                
+                return (
+                  <div key={pageNum} className="flex flex-col border border-[var(--border-main)] rounded-lg overflow-hidden bg-[var(--bg-main)]">
+                    <div className="text-center text-[10px] font-bold py-1 bg-[var(--bg-card-hover)] text-[var(--text-muted)] border-b border-[var(--border-main)]">
+                      {goal.bookType === 'talmud' ? `${t('daf', lang)} ${pageNum}` : `${t('page', lang)} ${pageNum}`}
+                    </div>
+                    <div className="flex flex-1 h-8">
+                      <button 
+                        onClick={() => onToggleBookSide?.(goal.id, sideA)}
+                        className={`flex-1 flex items-center justify-center text-[10px] font-bold transition-colors ${isACompleted ? 'bg-emerald-500 text-white' : isAInProgress ? 'bg-amber-500 text-white' : 'text-[var(--text-main)] hover:bg-[var(--bg-card-hover)]'}`}
+                      >
+                        {goal.bookType === 'talmud' ? 'א' : 'A'}
+                      </button>
+                      <div className="w-px bg-[var(--border-main)]" />
+                      <button 
+                        onClick={() => onToggleBookSide?.(goal.id, sideB)}
+                        className={`flex-1 flex items-center justify-center text-[10px] font-bold transition-colors ${isBCompleted ? 'bg-emerald-500 text-white' : isBInProgress ? 'bg-amber-500 text-white' : 'text-[var(--text-main)] hover:bg-[var(--bg-card-hover)]'}`}
+                      >
+                        {goal.bookType === 'talmud' ? 'ב' : 'B'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

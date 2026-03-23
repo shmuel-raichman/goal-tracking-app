@@ -79,6 +79,25 @@ export const translations = {
     exitConfirm: "Are you sure you want to exit the application?",
     cancel: "Cancel",
     exit: "Exit",
+    // Notifications
+    notificationsEnabled: "Notifications Enabled",
+    notificationsEnabledDesc: "You will receive reminders for your goals.",
+    notificationsDenied: "Notification permission denied by browser.",
+    notificationsNotSupported: "Your browser does not support notifications.",
+    reminderTitle: "Goal Reminder",
+    reminderDesc: "You have incomplete goals for today. Keep it up!",
+    // Book Goals
+    book: "Book / Deep Study",
+    genericBook: "Generic Book",
+    talmud: "Talmud (Gemara)",
+    tractate: "Tractate",
+    endPage: "End Page",
+    sideA: "Side A",
+    sideB: "Side B",
+    bookProgress: "Book Progress",
+    inProgress: "In Progress",
+    page: "Page",
+    daf: "Daf",
     // Days of week
     dow: ['S', 'M', 'T', 'W', 'T', 'F', 'S'],
     // Months
@@ -164,6 +183,25 @@ export const translations = {
     exitConfirm: "האם אתה בטוח שברצונך לצאת מהאפליקציה?",
     cancel: "ביטול",
     exit: "יציאה",
+    // Notifications
+    notificationsEnabled: "התראות הופעלו",
+    notificationsEnabledDesc: "תקבל תזכורות עבור היעדים שלך.",
+    notificationsDenied: "הרשאת התראות נדחתה על ידי הדפדפן.",
+    notificationsNotSupported: "הדפדפן שלך אינו תומך בהתראות.",
+    reminderTitle: "תזכורת ליעדים",
+    reminderDesc: "יש לך יעדים שלא הושלמו היום. המשך כך!",
+    // Book Goals
+    book: "ספר / לימוד מעמיק",
+    genericBook: "ספר כללי",
+    talmud: "תלמוד (גמרא)",
+    tractate: "מסכת",
+    endPage: "עמוד אחרון",
+    sideA: "עמוד א'",
+    sideB: "עמוד ב'",
+    bookProgress: "התקדמות בספר",
+    inProgress: "בתהליך",
+    page: "עמוד",
+    daf: "דף",
     // Days of week
     dow: ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'],
     // Months

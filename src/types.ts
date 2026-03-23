@@ -2,7 +2,7 @@ export type Frequency = 'Daily' | 'Weekdays' | 'Weekly';
 export type Unit = 'times' | 'mins' | 'pages' | 'liters';
 export type DurationUnit = 'days' | 'weeks' | 'months' | 'indefinite';
 
-export type GoalType = 'counter' | 'binary';
+export type GoalType = 'counter' | 'binary' | 'book';
 
 export interface Goal {
   id: string;
@@ -19,6 +19,13 @@ export interface Goal {
   completions: string[]; // Array of ISO date strings (YYYY-MM-DD)
   failures: string[]; // Array of ISO date strings (YYYY-MM-DD) for binary goals
   isSuspended: boolean;
+  
+  // Book specific fields
+  bookType?: 'generic' | 'talmud';
+  endPage?: number;
+  pageStartAt?: number;
+  completedSides?: string[];
+  inProgressSides?: string[];
 }
 
 export interface UserProfile {

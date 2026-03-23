@@ -53,7 +53,7 @@ export const Dashboard = ({ goals, settings, onToggleGoal, onToggleFailure, onAd
         />
       </div>
 
-      <main className="flex-1 px-4 space-y-2 overflow-y-auto pb-32">
+      <main className="flex-1 px-4 space-y-2 overflow-y-auto pb-6">
         {activeGoals.length > 0 && completionRate === 100 && (
           <motion.div 
             initial={{ opacity: 0, y: -10 }}
@@ -84,7 +84,7 @@ export const Dashboard = ({ goals, settings, onToggleGoal, onToggleFailure, onAd
 
       <button 
         onClick={onAddGoal}
-        className="fixed bottom-[104px] right-6 w-14 h-14 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-blue-600 transition-colors z-20"
+        className="absolute bottom-6 right-6 w-14 h-14 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-blue-600 transition-colors z-20"
       >
         <Plus size={28} />
       </button>

@@ -143,6 +143,55 @@ function AppContent() {
     };
   }, [user, isAuthReady]);
 
+  // Notification Logic
+  useEffect(() => {
+    if (!settings.notifications || !isAuthReady || !user || goals.length === 0) return;
+
+    // Check if we have permission
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    const checkReminders = () => {
+      const now = new Date();
+      // Only remind in the evening (e.g., after 18:00 / 6 PM)
+      if (now.getHours() < 18) return;
+
+      const today = getTodayISO();
+      const lastNotified = localStorage.getItem('lastNotificationDate');
+      
+      // Already notified today
+      if (lastNotified === today) return;
+
+      // Check if there are incomplete active goals
+      const hasIncompleteGoals = goals.some(goal => {
+        if (goal.isSuspended) return false;
+        const todayCompletions = goal.completions.filter(c => c === today).length;
+        const todayFailures = goal.failures?.filter(c => c === today).length || 0;
+        
+        if (goal.type === 'binary') {
+          return todayCompletions === 0 && todayFailures === 0;
+        } else {
+          return todayCompletions < goal.targetValue;
+        }
+      });
+
+      if (hasIncompleteGoals) {
+        const lang = settings.language || 'en';
+        new Notification(t('reminderTitle', lang), {
+          body: t('reminderDesc', lang),
+          icon: '/vite.svg'
+        });
+        localStorage.setItem('lastNotificationDate', today);
+      }
+    };
+
+    // Check immediately on mount/auth
+    checkReminders();
+
+    // Then check every 15 minutes
+    const interval = setInterval(checkReminders, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [settings.notifications, isAuthReady, user, goals, settings.language]);
+
   const handleToggleGoal = async (id: string) => {
     if (!user) return;
     const goal = goals.find(g => g.id === id);
@@ -253,6 +302,59 @@ function AppContent() {
         completions: newCompletions,
         failures: newFailures
       });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${goalId}`);
+    }
+  };
+
+  const handleToggleBookSide = async (goalId: string, sideId: string) => {
+    if (!user) return;
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal || goal.type !== 'book') return;
+
+    const completedSides = goal.completedSides || [];
+    const inProgressSides = goal.inProgressSides || [];
+    
+    let newCompletedSides = [...completedSides];
+    let newInProgressSides = [...inProgressSides];
+    let newCompletions = [...goal.completions];
+    let justCompleted = false;
+
+    if (completedSides.includes(sideId)) {
+      // Completed -> None
+      newCompletedSides = completedSides.filter(s => s !== sideId);
+    } else if (inProgressSides.includes(sideId)) {
+      // In Progress -> Completed
+      newInProgressSides = inProgressSides.filter(s => s !== sideId);
+      newCompletedSides.push(sideId);
+      
+      const today = getTodayISO();
+      if (!newCompletions.includes(today)) {
+        newCompletions.push(today);
+        justCompleted = true;
+      }
+    } else {
+      // None -> In Progress
+      newInProgressSides.push(sideId);
+      
+      const today = getTodayISO();
+      if (!newCompletions.includes(today)) {
+        newCompletions.push(today);
+        justCompleted = true;
+      }
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', user.uid, 'goals', goalId), {
+        completedSides: newCompletedSides,
+        inProgressSides: newInProgressSides,
+        completions: newCompletions
+      });
+      
+      if (justCompleted && settings.encouragement) {
+        setEncouragementMessage(getEncouragement());
+        setTimeout(() => setEncouragementMessage(null), 4000);
+      }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${user.uid}/goals/${goalId}`);
     }
@@ -371,7 +473,7 @@ function AppContent() {
 
   return (
     <div 
-      className="min-h-screen bg-[var(--bg-main)] text-[var(--text-main)] flex flex-col font-sans"
+      className="h-[100dvh] w-full overflow-hidden bg-[var(--bg-main)] text-[var(--text-main)] flex flex-col font-sans"
       dir={settings.language === 'he' ? 'rtl' : 'ltr'}
     >
       <div className="flex-1 relative overflow-hidden">
@@ -409,6 +511,7 @@ function AppContent() {
             onEditHistory={() => setEditingHistoryGoal(goals.find(g => g.id === selectedGoal.id) || selectedGoal)}
             onToggleGoal={handleToggleGoal}
             onToggleFailure={handleToggleFailure}
+            onToggleBookSide={handleToggleBookSide}
           />
         )}
 

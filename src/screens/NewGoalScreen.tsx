@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { ChevronLeft, Plus, Target, Calendar as CalendarIcon, Clock, Check, AlertCircle, ChevronDown } from 'lucide-react';
+import { ChevronLeft, Plus, Target, Calendar as CalendarIcon, Clock, Check, AlertCircle, ChevronDown, BookOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Goal, GoalType, Frequency, Unit, DurationUnit, AppSettings } from '../types';
 import { t } from '../utils/translations';
+import { TALMUD_TRACTATES } from '../utils/talmud';
 
 interface NewGoalScreenProps {
   onBack: () => void;
@@ -23,27 +24,58 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
   const [extendDuration, setExtendDuration] = useState(editingGoal?.extendDurationIfMissed || false);
   const [showToast, setShowToast] = useState(false);
 
+  // Book specific state
+  const [bookType, setBookType] = useState<'generic' | 'talmud'>(editingGoal?.bookType || 'generic');
+  const [endPage, setEndPage] = useState<number>(editingGoal?.endPage || 100);
+  const [selectedTractate, setSelectedTractate] = useState(TALMUD_TRACTATES[0].id);
+
   const lang = settings.language || 'en';
 
   const handleSave = () => {
     if (!title.trim()) return;
-    onSave({
+    
+    const goalData: Partial<Goal> = {
       id: editingGoal?.id,
       title,
       type,
       frequency,
-      targetValue: type === 'binary' ? 1 : (isNaN(targetValue) ? 1 : targetValue),
-      targetUnit: type === 'binary' ? 'times' : targetUnit,
-      durationValue: isNaN(durationValue) ? 0 : durationValue,
-      durationUnit,
+      targetValue: type === 'binary' || type === 'book' ? 1 : (isNaN(targetValue) ? 1 : targetValue),
+      targetUnit: type === 'binary' || type === 'book' ? 'times' : targetUnit,
+      durationValue: type === 'book' ? 0 : (isNaN(durationValue) ? 0 : durationValue),
+      durationUnit: type === 'book' ? 'indefinite' : durationUnit,
       smartReminders: reminders,
-      extendDurationIfMissed: extendDuration,
-    });
+      extendDurationIfMissed: type === 'book' ? false : extendDuration,
+    };
+
+    if (type === 'book') {
+      goalData.bookType = bookType;
+      if (bookType === 'talmud') {
+        const tractate = TALMUD_TRACTATES.find(t => t.id === selectedTractate);
+        goalData.endPage = tractate?.endPage || 64;
+        goalData.pageStartAt = 2;
+      } else {
+        goalData.endPage = isNaN(endPage) ? 1 : endPage;
+        goalData.pageStartAt = 1;
+      }
+      goalData.completedSides = editingGoal?.completedSides || [];
+      goalData.inProgressSides = editingGoal?.inProgressSides || [];
+    }
+
+    onSave(goalData);
     setShowToast(true);
     setTimeout(() => {
       setShowToast(false);
       onBack();
     }, 1500);
+  };
+
+  const handleTractateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = e.target.value;
+    setSelectedTractate(id);
+    const tractate = TALMUD_TRACTATES.find(t => t.id === id);
+    if (tractate && !title.trim()) {
+      setTitle(lang === 'he' ? tractate.nameHe : tractate.nameEn);
+    }
   };
 
   return (
@@ -69,7 +101,7 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
         </button>
       </header>
       
-      <main className="flex-1 flex flex-col px-6 py-8 gap-10 overflow-y-auto">
+      <main className="flex-1 flex flex-col px-6 pt-8 pb-safe gap-10 overflow-y-auto">
         <div className="flex flex-col">
           <input 
             autoFocus
@@ -100,8 +132,67 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
             >
               <span>{t('binary', lang)}</span>
             </button>
+            <button 
+              onClick={() => setType('book')}
+              className={`flex-1 h-12 rounded-xl font-bold text-[15px] transition-all flex flex-col items-center justify-center gap-0.5 ${
+                type === 'book' ? 'bg-blue-500 text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)] border border-[var(--border-main)]'
+              }`}
+            >
+              <span>{t('book', lang)}</span>
+            </button>
           </div>
         </section>
+
+        {type === 'book' && (
+          <section className="flex flex-col gap-4">
+            <div className="flex gap-3 bg-[var(--bg-card)] p-1 rounded-xl border border-[var(--border-main)]">
+              <button
+                onClick={() => setBookType('generic')}
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${bookType === 'generic' ? 'bg-[var(--bg-main)] text-[var(--text-main)] shadow-sm' : 'text-[var(--text-muted)]'}`}
+              >
+                {t('genericBook', lang)}
+              </button>
+              <button
+                onClick={() => setBookType('talmud')}
+                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-colors ${bookType === 'talmud' ? 'bg-[var(--bg-main)] text-[var(--text-main)] shadow-sm' : 'text-[var(--text-muted)]'}`}
+              >
+                {t('talmud', lang)}
+              </button>
+            </div>
+
+            {bookType === 'generic' ? (
+              <div className="flex flex-col gap-2">
+                <label className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('endPage', lang)}</label>
+                <div className="flex items-center gap-3 bg-[var(--bg-card)] rounded-lg p-3 border border-[var(--border-main)]">
+                  <input 
+                    type="number"
+                    value={endPage || ''}
+                    onChange={(e) => setEndPage(Number(e.target.value))}
+                    className="flex-1 min-w-0 bg-[var(--bg-main)] border-0 rounded-md text-xl font-bold text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading"
+                    placeholder="100"
+                  />
+                  <span className="text-[var(--text-muted)] font-bold px-4">{t('pages', lang)}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <label className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('tractate', lang)}</label>
+                <div className="relative bg-[var(--bg-card)] rounded-lg border border-[var(--border-main)]">
+                  <select 
+                    value={selectedTractate}
+                    onChange={handleTractateChange}
+                    className="w-full appearance-none bg-transparent border-0 rounded-lg text-[16px] font-bold text-[var(--text-main)] focus:ring-1 focus:ring-blue-500 py-4 pl-4 pr-10"
+                  >
+                    {TALMUD_TRACTATES.map(t => (
+                      <option key={t.id} value={t.id}>{lang === 'he' ? t.nameHe : t.nameEn}</option>
+                    ))}
+                  </select>
+                  <ChevronDown size={20} className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="flex flex-col gap-4">
           <h3 className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('frequency', lang)}</h3>
@@ -123,15 +214,15 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
         {type === 'counter' && (
           <section className="flex flex-col gap-4">
             <h3 className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('targetValue', lang)}</h3>
-            <div className="flex items-center gap-4 bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)]">
+            <div className="flex items-center gap-3 bg-[var(--bg-card)] rounded-lg p-3 border border-[var(--border-main)]">
               <input 
                 type="number"
                 value={targetValue || ''}
                 onChange={(e) => setTargetValue(Number(e.target.value))}
-                className="flex-1 bg-[var(--bg-main)] border-0 rounded-md text-xl font-bold text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading"
+                className="flex-1 min-w-0 bg-[var(--bg-main)] border-0 rounded-md text-xl font-bold text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading"
                 placeholder="0"
               />
-              <div className="w-[120px] relative">
+              <div className="w-[110px] shrink-0 relative">
                 <select 
                   value={targetUnit}
                   onChange={(e) => setTargetUnit(e.target.value as Unit)}
@@ -148,41 +239,43 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
           </section>
         )}
 
-        <section className="flex flex-col gap-4">
-          <h3 className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('duration', lang)}</h3>
-          <div className="flex items-center gap-4 bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)]">
-            <input 
-              type="number"
-              value={durationValue || ''}
-              onChange={(e) => setDurationValue(Number(e.target.value))}
-              disabled={durationUnit === 'indefinite'}
-              className="flex-1 bg-[var(--bg-main)] border-0 rounded-md text-xl font-bold text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading disabled:opacity-50"
-              placeholder={durationUnit === 'indefinite' ? "∞" : "0"}
-            />
-            <div className="w-[120px] relative">
-              <select 
-                value={durationUnit}
-                onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
-                className="w-full appearance-none bg-[var(--bg-main)] border-0 rounded-md text-[15px] font-bold text-[var(--text-main)] focus:ring-1 focus:ring-blue-500 py-3 pl-4 pr-10"
-              >
-                <option value="indefinite">{t('indefinite', lang)}</option>
-                <option value="days">{t('days', lang)}</option>
-                <option value="weeks">{t('weeks', lang)}</option>
-                <option value="months">{t('months', lang)}</option>
-              </select>
-              <ChevronDown size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+        {type !== 'book' && (
+          <section className="flex flex-col gap-4">
+            <h3 className="text-[13px] font-bold text-[var(--text-muted)] uppercase tracking-wider">{t('duration', lang)}</h3>
+            <div className="flex items-center gap-3 bg-[var(--bg-card)] rounded-lg p-3 border border-[var(--border-main)]">
+              <input 
+                type="number"
+                value={durationValue || ''}
+                onChange={(e) => setDurationValue(Number(e.target.value))}
+                disabled={durationUnit === 'indefinite'}
+                className="flex-1 min-w-0 bg-[var(--bg-main)] border-0 rounded-md text-xl font-bold text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:ring-1 focus:ring-blue-500 py-3 px-4 font-heading disabled:opacity-50"
+                placeholder={durationUnit === 'indefinite' ? "∞" : "0"}
+              />
+              <div className="w-[110px] shrink-0 relative">
+                <select 
+                  value={durationUnit}
+                  onChange={(e) => setDurationUnit(e.target.value as DurationUnit)}
+                  className="w-full appearance-none bg-[var(--bg-main)] border-0 rounded-md text-[15px] font-bold text-[var(--text-main)] focus:ring-1 focus:ring-blue-500 py-3 pl-4 pr-10"
+                >
+                  <option value="indefinite">{t('indefinite', lang)}</option>
+                  <option value="days">{t('days', lang)}</option>
+                  <option value="weeks">{t('weeks', lang)}</option>
+                  <option value="months">{t('months', lang)}</option>
+                </select>
+                <ChevronDown size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
         <section className="flex flex-col gap-4 mt-2">
-          <div className="flex items-center justify-between bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)]">
-            <div className="flex flex-col">
-              <span className="text-[16px] font-bold text-[var(--text-main)]">{t('smartReminders', lang)}</span>
-              <span className="text-[13px] text-[var(--text-muted)]">{t('notifyForget', lang)}</span>
+          <div className="flex items-center justify-between bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)] gap-4">
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="text-[16px] font-bold text-[var(--text-main)] truncate">{t('smartReminders', lang)}</span>
+              <span className="text-[13px] text-[var(--text-muted)] leading-tight mt-0.5">{t('notifyForget', lang)}</span>
             </div>
             <button 
               onClick={() => setReminders(!reminders)}
-              className={`relative w-10 h-6 rounded-full transition-colors ${reminders ? 'bg-blue-500' : 'bg-[var(--bg-card-hover)]'}`}
+              className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${reminders ? 'bg-blue-500' : 'bg-[var(--bg-card-hover)]'}`}
             >
               <motion.div 
                 className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm ${lang === 'he' ? 'right-1' : 'left-1'}`}
@@ -192,23 +285,25 @@ export const NewGoalScreen = ({ onBack, onSave, editingGoal, settings }: NewGoal
           </div>
         </section>
 
-        <section className="flex flex-col gap-4 mt-2">
-          <div className="flex items-center justify-between bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)]">
-            <div className="flex flex-col">
-              <span className="text-[16px] font-bold text-[var(--text-main)]">{t('extendDuration', lang)}</span>
-              <span className="text-[13px] text-[var(--text-muted)]">{t('countSuccessful', lang)}</span>
+        {type !== 'book' && (
+          <section className="flex flex-col gap-4 mt-2">
+            <div className="flex items-center justify-between bg-[var(--bg-card)] rounded-lg p-4 border border-[var(--border-main)] gap-4">
+              <div className="flex flex-col flex-1 min-w-0">
+                <span className="text-[16px] font-bold text-[var(--text-main)] truncate">{t('extendDuration', lang)}</span>
+                <span className="text-[13px] text-[var(--text-muted)] leading-tight mt-0.5">{t('countSuccessful', lang)}</span>
+              </div>
+              <button 
+                onClick={() => setExtendDuration(!extendDuration)}
+                className={`relative shrink-0 w-10 h-6 rounded-full transition-colors ${extendDuration ? 'bg-blue-500' : 'bg-[var(--bg-card-hover)]'}`}
+              >
+                <motion.div 
+                  className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm ${lang === 'he' ? 'right-1' : 'left-1'}`}
+                  animate={{ x: extendDuration ? (lang === 'he' ? -16 : 16) : 0 }}
+                />
+              </button>
             </div>
-            <button 
-              onClick={() => setExtendDuration(!extendDuration)}
-              className={`relative w-10 h-6 rounded-full transition-colors ${extendDuration ? 'bg-blue-500' : 'bg-[var(--bg-card-hover)]'}`}
-            >
-              <motion.div 
-                className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm ${lang === 'he' ? 'right-1' : 'left-1'}`}
-                animate={{ x: extendDuration ? (lang === 'he' ? -16 : 16) : 0 }}
-              />
-            </button>
-          </div>
-        </section>
+          </section>
+        )}
       </main>
 
       <AnimatePresence>

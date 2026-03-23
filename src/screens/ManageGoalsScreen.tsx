@@ -34,7 +34,7 @@ export const ManageGoalsScreen = ({ goals, onBack, onEditGoal, onEditHistory, on
         <h1 className="text-xl font-bold font-heading">{t('manageGoals', lang)}</h1>
       </header>
       
-      <main className="flex-1 p-6 overflow-y-auto pb-32">
+      <main className="flex-1 p-6 overflow-y-auto pb-safe">
         <div className="space-y-4">
           {goals.length === 0 ? (
             <div className="text-center py-12">
